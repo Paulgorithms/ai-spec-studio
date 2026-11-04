@@ -1,7 +1,6 @@
-// Project identity used in metadata and the starter page.
-// Rename here when starting a new project from this template.
+// Project identity used in metadata and the home page.
 export const siteConfig = {
-  name: "Next.js Starter",
+  name: "AI Specification Studio",
   description:
-    "A Next.js App Router starter with Cache Components, Tailwind CSS, and Playwright.",
+    "A standalone, AI-powered, specification-driven software development platform.",
 };
