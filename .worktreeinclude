@@ -1,0 +1,4 @@
+# Gitignored files Claude Code copies into each new worktree (`claude --worktree`).
+# Uses .gitignore syntax; only files that are also gitignored are copied, so the
+# tracked .env.example is skipped.
+.env*

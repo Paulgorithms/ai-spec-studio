@@ -1,0 +1,7 @@
+# Files in .gitignore are already skipped.
+
+# Written by npm.
+package-lock.json
+
+# Rewritten by `next dev`; formatting it would churn on every dev run.
+AGENTS.md
