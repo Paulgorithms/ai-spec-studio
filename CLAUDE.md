@@ -17,7 +17,7 @@ Don't add dependencies without asking. Prefer what Next.js, React, and the platf
 Use the Node.js version in `.nvmrc` (`nvm use`); CI reads the same file. `engines` in `package.json` only sets the minimum Next.js supports.
 
 - `npm run dev` — dev server (Turbopack) at http://localhost:3000; set `PORT` in the shell for another port (`PORT=3001 npm run dev`; Next.js doesn't read it from `.env`)
-- `npm run lint` — ESLint 9 flat config (`eslint-config-next` core-web-vitals + typescript); checks the whole project
+- `npm run lint` — ESLint 10 flat config (`eslint-config-next` core-web-vitals + typescript); checks the whole project
 - `npm run format` — format the whole project with Prettier (writes files); `npm run format:check` only reports unformatted files, as CI does
 - `npm run build` — production build; this is also the type check (there is no separate `tsc` script)
 - `npm run start` — serves the production build (run `npm run build` first)
@@ -54,7 +54,7 @@ public/         static assets
 
 Import through the `@/*` alias (maps to `src/*`), not long relative paths.
 
-`src/app/examples/`, `src/lib/examples.ts`, `src/lib/examples.test.ts`, and `tests/e2e/examples.spec.ts` are disposable demos of the route conventions. Don't build features on them; projects made from this template delete them. The root `not-found.tsx`, `error.tsx`, `global-error.tsx`, and the shared components in `src/components/` are meant to stay.
+The root `not-found.tsx`, `error.tsx`, `global-error.tsx`, and the shared components in `src/components/` are meant to stay.
 
 There is intentionally no root `loading.tsx`: it would wrap every page in one generic fallback and hide missing `<Suspense>` boundaries that Cache Components reports at build time. Add `loading.tsx` per segment where a page reads request-time data.
 
@@ -126,7 +126,7 @@ Unit and component tests use Vitest with Testing Library; see `vitest.config.mts
 - `main` is the default branch. Make feature and configuration changes on a short-lived branch (`feat/…`, `fix/…`, `chore/…`, `docs/…`) and merge them through a pull request. Push directly to `main` only when the user explicitly asks.
 - Conventional Commits: `feat: …`, `fix: …`, `refactor: …`, `chore: …`, `docs: …`. Imperative mood, subject ≤ 72 chars.
 - Lint and build must pass before committing. Commit, push, and open pull requests only when asked.
-- CI (`.github/workflows/ci.yml`) runs `npm ci`, lint, unit tests, build, and Chromium E2E tests on pull requests into `main` and on pushes to `main`. It must pass before a pull request is merged. Pin third-party actions to full commit SHAs with the version in a comment.
+- CI (`.github/workflows/ci.yml`) runs `npm ci`, the format check, lint, unit tests, build, and Chromium E2E tests on pull requests into `main` and on pushes to `main`. It must pass before a pull request is merged. Pin third-party actions to full commit SHAs with the version in a comment.
 - Dependabot (`.github/dependabot.yml`) opens grouped update PRs for npm and GitHub Actions every Sunday, after a 7-day cooldown (30 days for majors). Merge them only when CI passes, and read the changelog for any major update. For a Next.js upgrade, read `01-getting-started/18-upgrading.md` and the bundled docs from the new version before changing code. Don't push commits to a Dependabot branch; comment `@dependabot rebase` or `@dependabot recreate` instead. `@types/node` majors are ignored on purpose: bump them together with `.nvmrc`. Prettier updates have their own group; if one fails the format check, close it and redo the update with `npm run format` in a normal `chore/` PR.
 - When committing (only when asked), include any `AGENTS.md` changes `next dev` made, so the tree stays clean.
 - Worktrees (`claude --worktree`, or isolated subagents) live in `.claude/worktrees/`, which is gitignored and skipped by ESLint. In a worktree, run `npm install` first, and use a port other than the main checkout's for `dev` and `test:e2e` (see the README's worktree section). `.worktreeinclude` copies `.env*` files in.

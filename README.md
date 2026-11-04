@@ -1,16 +1,15 @@
-# Next.js Starter
+# AI Specification Studio
 
-A foundation for new Next.js App Router projects, with the tooling and conventions already set up.
+A standalone, AI-powered, specification-driven software development platform.
 
 ## What's included
 
 - **Next.js 16.4** (App Router, Turbopack) with **React 19.3** and strict **TypeScript**
 - **Cache Components**, **partial prefetching**, and the **React Compiler** turned on in `next.config.ts`
 - **Tailwind CSS v4** through the Turbopack loader, with light and dark design tokens in `src/app/globals.css`
-- **ESLint 9** flat config (`eslint-config-next` core-web-vitals + typescript)
+- **ESLint 10** flat config (`eslint-config-next` core-web-vitals + typescript)
 - **Prettier** with Tailwind class sorting, checked in CI. Install your editor's Prettier extension and turn on format on save
 - **Route conventions** ready to use: root `not-found.tsx`, `error.tsx` (recovers with `retry()`), and `global-error.tsx`
-- **Examples** at `/examples` showing `loading.tsx` with request-time params, `notFound()`, and an error boundary. Delete them when you start
 - **Vitest** unit and component tests with Testing Library, next to the code as `src/**/*.test.ts(x)`
 - **Playwright** E2E tests (Chromium) in `tests/e2e/`
 - **GitHub Actions CI**: format check, lint, unit tests, build, and E2E on pull requests and pushes to `main`
