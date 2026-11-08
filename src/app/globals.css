@@ -1,26 +1,124 @@
 @import "tailwindcss";
 
+/*
+ * `dark:` follows the data-theme attribute on <html> (see src/lib/theme.ts),
+ * not the OS preference: dark is the default whatever the OS is set to.
+ * Most components shouldn't need `dark:` at all; the tokens below already
+ * switch with the theme. `light:` is its counterpart, for UI that shows which
+ * theme is active (the theme controls): CSS reflects the saved choice from the
+ * first paint, before React hydrates.
+ */
+@custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
+@custom-variant light (&:where([data-theme=light], [data-theme=light] *));
+
+/*
+ * Semantic color tokens. Dark is the default, so it sits on :root and also
+ * applies when the attribute is missing. Every text/background pair meets
+ * WCAG 2.2 AA (4.5:1) on all four surfaces in both themes. Recheck contrast
+ * when changing a value.
+ *
+ * - background, surface, surface-raised, surface-hover: page, panels and
+ *   cards, active or elevated items, hover fill.
+ * - border, border-strong: decorative dividers and outlines. Never the only
+ *   thing that shows where a control is.
+ * - border-input: boundaries of inputs and other controls (3:1, WCAG 1.4.11).
+ * - foreground, muted-foreground: primary and secondary text.
+ * - accent: primary fill, with on-accent text on top of it.
+ * - accent-text: accent-colored text and links on any surface. It is not
+ *   the text color for accent fills; use on-accent for that.
+ * - ring: focus outline (3:1 on every surface).
+ * - success, warning, danger: status text. danger-solid is the destructive
+ *   fill, with on-accent text.
+ * - accent-hover/-active, danger-solid-hover/-active: pressed-state fills,
+ *   derived below by mixing in black so they get darker in both themes and
+ *   white text gains contrast. Don't use opacity modifiers (bg-accent/90) for
+ *   these: they blend with the surface behind and get lighter in light mode.
+ */
 :root {
+  color-scheme: dark;
+  /* Derived from whichever theme's values apply, so defined once. */
+  --accent-hover: color-mix(in srgb, var(--accent), black 10%);
+  --accent-active: color-mix(in srgb, var(--accent), black 20%);
+  --danger-solid-hover: color-mix(in srgb, var(--danger-solid), black 10%);
+  --danger-solid-active: color-mix(in srgb, var(--danger-solid), black 20%);
+  --background: #09090b;
+  --surface: #111114;
+  --surface-raised: #18181c;
+  --surface-hover: #1f1f24;
+  --border: #27272c;
+  --border-strong: #3a3a42;
+  --border-input: #6b6b76;
+  --foreground: #ededef;
+  --muted-foreground: #a1a1aa;
+  --accent: #5b5bd6;
+  --accent-text: #8b8cf8;
+  --on-accent: #ffffff;
+  --ring: #8b8cf8;
+  --success: #4ade80;
+  --warning: #fbbf24;
+  --danger: #f87171;
+  --danger-solid: #dc2626;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
   --background: #ffffff;
-  --foreground: #171717;
+  --surface: #fafafa;
+  --surface-raised: #f4f4f5;
+  --surface-hover: #ececef;
+  --border: #e4e4e7;
+  --border-strong: #d4d4d8;
+  --border-input: #85858f;
+  --foreground: #18181b;
+  --muted-foreground: #52525b;
+  --accent: #4f46e5;
+  --accent-text: #4338ca;
+  --on-accent: #ffffff;
+  --ring: #4f46e5;
+  --success: #137537;
+  --warning: #a84d07;
+  --danger: #b91c1c;
+  --danger-solid: #b91c1c;
 }
 
 @theme inline {
   --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
+  --color-surface-hover: var(--surface-hover);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-border-input: var(--border-input);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-active: var(--accent-active);
+  --color-accent-text: var(--accent-text);
+  --color-on-accent: var(--on-accent);
+  --color-ring: var(--ring);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --color-danger-solid: var(--danger-solid);
+  --color-danger-solid-hover: var(--danger-solid-hover);
+  --color-danger-solid-active: var(--danger-solid-active);
+
+  /* The fallbacks apply where next/font's variables aren't set (global-error). */
+  --font-sans: var(--font-geist-sans, ui-sans-serif, system-ui, sans-serif);
+  --font-mono: var(
+    --font-geist-mono,
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace
+  );
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/*
+ * A modal <dialog> (the mobile navigation drawer) makes the page inert but
+ * doesn't stop it scrolling underneath. Lock page scrolling while one is open.
+ */
+html:has(dialog:modal) {
+  overflow: hidden;
 }
