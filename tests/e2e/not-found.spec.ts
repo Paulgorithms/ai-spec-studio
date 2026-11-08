@@ -18,6 +18,6 @@ test("not-found page links back home", async ({ page }) => {
 
   await expect(page).toHaveURL("/");
   await expect(
-    page.getByRole("heading", { level: 1, name: "AI Specification Studio" }),
+    page.getByRole("heading", { level: 1, name: "Dashboard" }),
   ).toBeVisible();
 });
