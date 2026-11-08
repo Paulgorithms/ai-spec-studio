@@ -25,12 +25,12 @@ export default function ErrorPage({
         <h1 className="text-3xl font-semibold tracking-tight">
           Something went wrong
         </h1>
-        <p className="text-lg text-zinc-600 dark:text-zinc-400">
+        <p className="text-lg text-muted-foreground">
           An unexpected error occurred. Try again, and if it keeps happening,
           let us know.
         </p>
         {digest && (
-          <p className="text-sm text-zinc-600 dark:text-zinc-400">
+          <p className="text-sm text-muted-foreground">
             Error ID: <code className="font-mono">{digest}</code>
           </p>
         )}

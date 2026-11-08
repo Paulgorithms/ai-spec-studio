@@ -6,12 +6,14 @@ A standalone, AI-powered, specification-driven software development platform.
 
 - **Next.js 16.4** (App Router, Turbopack) with **React 19.3** and strict **TypeScript**
 - **Cache Components**, **partial prefetching**, and the **React Compiler** turned on in `next.config.ts`
-- **Tailwind CSS v4** through the Turbopack loader, with light and dark design tokens in `src/app/globals.css`
+- **Tailwind CSS v4** through the Turbopack loader, with semantic design tokens for a dark (default) and a light theme in `src/app/globals.css`
+- **App shell**: a responsive layout with a sidebar, a header, and a mobile navigation drawer, plus starter Dashboard, Projects, Specifications, and Settings pages showing labeled sample data
+- **Reusable components**: buttons, cards, badges, form fields, and page headers in `src/components/`
 - **ESLint 10** flat config (`eslint-config-next` core-web-vitals + typescript)
 - **Prettier** with Tailwind class sorting, checked in CI. Install your editor's Prettier extension and turn on format on save
-- **Route conventions** ready to use: root `not-found.tsx`, `error.tsx` (recovers with `retry()`), and `global-error.tsx`
+- **Route conventions** ready to use: root `not-found.tsx`, `error.tsx` (recovers with `retry()`), and `global-error.tsx`, plus an error page that keeps the app shell
 - **Vitest** unit and component tests with Testing Library, next to the code as `src/**/*.test.ts(x)`
-- **Playwright** E2E tests (Chromium) in `tests/e2e/`
+- **Playwright** E2E tests (Chromium) in `tests/e2e/`, including automated WCAG 2.2 AA checks with axe
 - **GitHub Actions CI**: format check, lint, unit tests, build, and E2E on pull requests and pushes to `main`
 - **Dependabot**: weekly grouped update PRs for npm packages and the SHA-pinned actions
 - **`CLAUDE.md` / `AGENTS.md`**: project conventions for contributors and AI coding agents
@@ -42,6 +44,21 @@ npm run format && npm run lint && npm run test:unit && npm run build && npm run 
 
 See [`CLAUDE.md`](./CLAUDE.md) for branch names, commit messages, and the rest of the workflow.
 
+## The app
+
+| Page           | URL               | What it shows                                                  |
+| -------------- | ----------------- | -------------------------------------------------------------- |
+| Dashboard      | `/`               | Totals, the most recent specifications, and recent projects    |
+| Projects       | `/projects`       | Each project with its specification count and status breakdown |
+| Specifications | `/specifications` | Every specification with its project, status, and last update  |
+| Settings       | `/settings`       | The color theme                                                |
+
+- **Layout:** from 1024px wide, a sidebar lists the sections; on narrower screens the header's menu button opens them in a drawer. Every page starts with a "Skip to content" link for keyboard users.
+- **Theme:** dark by default, whatever the operating system prefers. Choose light in Settings or with the header's toggle. The choice is saved in the browser, applies before the page appears (no flash), and switches every open tab.
+- **Sample data:** projects and specifications are fictional records in `src/lib/mock-data.ts`, marked "Sample data" on each page, until workspaces are backed by a database. Nothing can be created or edited yet.
+
+[`CLAUDE.md`](./CLAUDE.md) covers how it's built: the route structure, design tokens, theme internals (including what a future Content Security Policy needs), components, and accessibility rules.
+
 ## Commands
 
 | Command                   | What it does                                                                       |
@@ -56,7 +73,7 @@ See [`CLAUDE.md`](./CLAUDE.md) for branch names, commit messages, and the rest o
 | `npm run test:unit:watch` | Vitest in watch mode                                                               |
 | `npm run test:e2e`        | Playwright E2E tests; starts the dev server or reuses one on port 3000 (or `PORT`) |
 
-To reproduce a CI run locally: `npm run build && CI=true npm run test:e2e`.
+To reproduce a CI run locally: `npm run build && CI=true npm run test:e2e`. The E2E suite includes the accessibility scans; to run only those, use `npm run test:e2e -- tests/e2e/accessibility.spec.ts`.
 
 ## Using Claude Code (optional)
 
@@ -118,11 +135,12 @@ When you exit the Claude session, it asks whether to keep or remove a worktree t
 
 ```
 src/
-  app/          routes only; route-private pieces go in _components/
-  components/   shared UI used by more than one route
-  lib/          non-UI logic: data access, validation, utilities
-public/         static assets
-tests/e2e/      Playwright specs
+  app/              routes only; route-private pieces go in _components/
+    (studio)/       pages inside the app shell (the group name isn't part of the URL)
+  components/       shared UI used by more than one route
+  lib/              non-UI logic: theme, navigation, sample data, formatting
+public/             static assets
+tests/e2e/          Playwright specs, including accessibility.spec.ts
 ```
 
 See [`CLAUDE.md`](./CLAUDE.md) for the full conventions: caching, styling, error handling, testing, security, and git workflow.
