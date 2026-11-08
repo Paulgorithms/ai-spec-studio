@@ -26,8 +26,9 @@ Use the Node.js version in `.nvmrc` (`nvm use`); CI reads the same file. `engine
   - By test name: `npm run test:unit -- -t "getErrorDigest"`
   - Watch mode while developing: `npm run test:unit:watch` (don't use it in scripts or agents; it never exits)
 - `npm run test:e2e` — Playwright E2E tests (Chromium) in `tests/e2e/`; starts `npm run dev` itself, or reuses a server already on port 3000, or on `PORT` when set (see [Testing](#testing))
-  - One file: `npm run test:e2e -- tests/e2e/homepage.spec.ts`
-  - By test name: `npm run test:e2e -- -g "homepage loads"`
+  - One file: `npm run test:e2e -- tests/e2e/dashboard.spec.ts`
+  - By test name: `npm run test:e2e -- -g "the dashboard loads"`
+  - Accessibility (axe) checks only: `npm run test:e2e -- tests/e2e/accessibility.spec.ts`
   - Debugging: append `-- --ui` or `-- --headed`; open the last HTML report with `npx playwright show-report`
 
 **Before calling work done:** run `npm run format`, then `npm run lint`, `npm run test:unit`, and `npm run build`, and all must pass. For UI or route changes, also run `npm run test:e2e` and check the page in the running dev server with a browser tool, preferably Playwright MCP (see [MCP tools](#mcp-tools)).
@@ -58,6 +59,28 @@ The root `not-found.tsx`, `error.tsx`, `global-error.tsx`, and the shared compon
 
 There is intentionally no root `loading.tsx`: it would wrap every page in one generic fallback and hide missing `<Suspense>` boundaries that Cache Components reports at build time. Add `loading.tsx` per segment where a page reads request-time data.
 
+## Application structure
+
+```
+src/app/
+  layout.tsx            root: <html data-theme>, fonts, the theme script, ThemeRestore
+  error.tsx, global-error.tsx, not-found.tsx    outside the studio shell
+  _components/          root-private (ThemeRestore)
+  (studio)/             route group: every page that uses the app shell; not in URLs
+    layout.tsx          the shell: skip link, sidebar, header, <main id="main">
+    error.tsx           errors in studio pages render inside the shell
+    _components/        shell pieces: sidebar, header, mobile drawer, nav links, icons, theme toggle
+    page.tsx            /                 Dashboard
+    projects/           /projects
+    specifications/     /specifications
+    settings/           /settings         (theme selector in settings/_components/)
+```
+
+- **New pages that use the shell go inside `(studio)/`.** Pages render inside the shell's `<main>`, so never add another `<main>` (`PageContainer` renders one and is only for pages outside the shell).
+- **Navigation** comes from `NAV_ITEMS` in `src/lib/navigation.ts`; the sidebar, the mobile drawer, and the header's section label all read it. Add a section there, not in the components. `isActiveNavItem` matches on path segments, so `/projects-x` doesn't activate `/projects`.
+- **Responsive shell:** from `lg` (1024px) the 240px sidebar is always shown. Below that, the header's menu button opens the same links in a native modal `<dialog>` (`showModal()` provides focus containment, Escape, and an inert background; don't add custom focus-trap code). The header is 56px (`h-14`), and the sidebar's brand row matches it.
+- **`usePathname` and dynamic routes:** the nav reads `usePathname()`, which resolves at build time only while every studio route is static. A dynamic route without `generateStaticParams` (for example `/projects/[id]`) makes it suspend, so wrap the nav in `<Suspense>` when adding one (see the `usePathname` docs, Cache Components section).
+
 ## TypeScript and React
 
 - Server Components are the default. Add `"use client"` only for state, effects, event handlers, or browser APIs, and put it on the smallest leaf component possible.
@@ -71,13 +94,50 @@ There is intentionally no root `loading.tsx`: it would wrap every page in one ge
 - Prettier owns code formatting and Tailwind class order (`prettier.config.mjs`, with `prettier-plugin-tailwindcss`). Don't format by hand or argue style in review; run `npm run format`. ESLint's formatting rules are turned off by `eslint-config-prettier`. The plugin sorts classes in `className` attributes only, not in string constants such as `buttonClasses`.
 - Reformatting commits that touch many files go in a commit of their own, added to `.git-blame-ignore-revs`. Merge those PRs with a merge commit, not a squash, so the listed SHA survives.
 - Tailwind utility classes in JSX. Avoid new CSS files and inline `style` except for truly dynamic values.
-- Design tokens live in `src/app/globals.css`: CSS variables on `:root` (light and dark), exposed through `@theme inline`. Add new colors and fonts there instead of hard-coding hex values.
-- Support dark mode with `dark:` variants, matching the existing `prefers-color-scheme` setup.
+- Design tokens live in `src/app/globals.css`: semantic CSS variables (dark on `:root`, light on `:root[data-theme="light"]`), exposed to Tailwind through `@theme inline`. Use the semantic classes (`bg-surface`, `text-muted-foreground`, `border-border-input`, `bg-accent text-on-accent`, …) and never hard-code hex values or Tailwind palette colors (`zinc-*`) in components. Add new colors there, with values for both themes, and check WCAG AA contrast on all four surfaces in both themes before using them. The comment block at the top of `globals.css` says what each token is for.
+- Token meanings that are easy to get wrong: `accent-text` is accent-colored text on any surface, while text on an accent fill is `on-accent`. `border` and `border-strong` are decorative; a control's boundary uses `border-input` (3:1). Pressed-state fills come from the `*-hover`/`*-active` tokens (made with `color-mix` against black), not opacity modifiers like `bg-accent/90`, which turn lighter in light mode.
+- Dark mode follows the `data-theme` attribute on `<html>`, not the OS `prefers-color-scheme` setting: dark is the default whatever the OS prefers. Most components need no theme variants, because the tokens switch. `dark:` and `light:` are custom variants on that attribute, for the rare UI that must show which theme is active (the theme controls). Don't add `prefers-color-scheme` media queries or `@media (prefers-color-scheme)` variants.
+- Keyboard focus is always visible: `focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring` (the components already have it). Don't remove outlines, and keep `outline-color` out of transitions (use `transition-[color,background-color,border-color]`, not `transition-colors`) so the ring appears in its own color immediately.
 - When the same class combination repeats, extract a component rather than using `@apply`.
+
+### Theme
+
+- **Source of truth:** `data-theme="dark" | "light"` on `<html>`. The server always renders `dark`, so pages stay statically prerendered. The saved choice lives in `localStorage` under `ai-spec-studio:theme`; anything else (missing, invalid, unreadable storage) means dark.
+- **Before the first paint:** `themeInitScript` (in `src/lib/theme.ts`) runs in `<head>`, applies a saved light theme, and listens for `storage` events so every open tab follows a change. The theme controls' server HTML always describes dark, so two small scripts right after them (`themePressedScript`, `themeRadioScript`) correct their `aria-pressed` and checked state from the page's theme before the first paint. All three go through `InlineScript` (`src/components/inline-script.tsx`), which renders them inert (`text/plain`) whenever React renders in the browser.
+- **In React:** change the theme with `setTheme()` (applies it and saves it; returns `false` when the browser blocked saving) and read it with `useTheme()` (`src/lib/use-theme.ts`), which watches the attribute so it follows other tabs. Its server value is dark, so use CSS (`dark:`/`light:`) for what must look right before hydration. `useCanSaveTheme()` says whether the browser allows saving; it's `null` until hydration, so never claim either answer before then. `ThemeRestore` (in the root layout and in `global-error.tsx`) re-applies the saved theme in the rare cases React renders the whole document in the browser (the error fallback after a server rendering error), where the `<head>` script never runs.
+- **Content Security Policy (not implemented yet):** a strict `script-src` blocks the three inline theme scripts. Allow them by hash, not nonce: each is a constant string, so its `'sha256-…'` value is stable until the code changes, and hashes keep pages static. Per `02-guides/content-security-policy.md`, nonces require dynamic rendering and don't work with the prerendered static shell (Cache Components). Next.js's own inline scripts need handling too; follow that guide when adding a CSP. Never fall back to `'unsafe-inline'`. If the scripts are blocked, pages still work in dark; only the saved light theme, cross-tab sync, and the controls' pre-hydration state stop working.
+
+### Components
+
+Shared UI in `src/components/` (Server Components unless noted; check the props in each file):
+
+- `Button` / `ButtonLink`: `variant` (`primary`, `secondary`, `ghost`, `danger`) and `size` (`sm` 32px, `md` 36px). `ButtonLink` is for navigation and can't be disabled.
+- `Card`, `CardHeader`, `CardTitle` (`as` picks the heading level, default `h3`), `CardDescription`.
+- `Badge` (`tone`: `neutral`, `accent`, `success`, `warning`, `danger`) and `SpecStatusBadge`, which always shows the status as text.
+- `Input` and `Field` (label, optional `description`, `error` that sets `aria-invalid` and is linked through `aria-describedby`; ids come from `useId`).
+- `PageHeader` (the page's only h1, with optional `description` and `actions`).
+- `ProjectCard` and `SpecificationList`, for the sample data pages.
+- `InlineScript` (Client Component) for pre-paint scripts; pass only constant strings.
+
+`className` on these components is for layout around them (margins, width, grid placement). `cx()` in `src/lib/class-names.ts` joins classes but doesn't resolve Tailwind conflicts, so a passed class can't reliably override a component's own styles.
+
+### Sample data
+
+Until workspaces have a database, the pages read fictional records from `src/lib/mock-data.ts` through `getProjects()` and `getSpecifications()`, and summarize them with the pure functions in `src/lib/dashboard.ts`. Every page that shows them carries a "Sample data" badge. Dates are fixed ISO strings formatted in UTC by `formatDate()` (`src/lib/format.ts`); never generate them from the clock. To move to real data, keep the types and replace those two functions. Specification statuses (`src/lib/spec-status.ts`) are provisional. Don't add controls for actions that don't exist yet (create, edit, delete): project cards and specification rows aren't links until their pages exist.
+
+## Accessibility
+
+The target is WCAG 2.2 AA. For any UI change:
+
+- Use semantic HTML and landmarks: one h1 per page (from `PageHeader`) with no skipped heading levels, real `<button>`s for actions and links for navigation, and labeled form controls (`Field`).
+- Everything works with the keyboard and has a visible focus outline. The skip link must stay the first tab stop.
+- Text contrast is at least 4.5:1, and control boundaries and focus rings at least 3:1, in both themes. Status never relies on color alone.
+- Run `tests/e2e/accessibility.spec.ts` (axe, WCAG 2.0–2.2 A/AA tags, both themes). Fix violations; don't disable rules or exclude elements to make it pass. Axe catches only part of the problems, so also check keyboard flow, focus order, and screen reader labels yourself.
 
 ## Error handling and validation
 
-- Use the route-level file conventions: `error.tsx` (a client component that recovers with `retry()`, not the older `reset()`, which re-renders without re-fetching), `not-found.tsx` with `notFound()`, and `global-error.tsx` for the root. See `01-getting-started/10-error-handling.md`.
+- Use the route-level file conventions: `error.tsx` (a client component that recovers with `retry()`, not the older `reset()`, which re-renders without re-fetching), `not-found.tsx` with `notFound()`, and `global-error.tsx` for the root. See `01-getting-started/10-error-handling.md`. Errors in studio pages are caught by `(studio)/error.tsx`, inside the shell; the root `error.tsx` only sees errors outside it (including in the studio layout itself), and `global-error.tsx` replaces the whole document when the root layout fails.
+- Don't leave routes that throw "for testing" in the app. Boundary content is covered by unit tests (`src/app/root-pages.test.tsx`, `src/app/(studio)/error.test.tsx`, `src/app/(studio)/layout.test.tsx`); check Next's real error wiring with a temporary route in the dev server, then delete it while `next dev` is still running (otherwise `.next/dev/types/validator.ts` keeps a stale import and `npm run build` fails; deleting `.next/dev/types` fixes that).
 - For expected errors in Server Actions (such as validation failures), return them as values for the form to display. Don't throw.
 - Validate all external input (form data, params, searchParams, route handler bodies) on the server, even if the client also validates. No validation library is installed yet. Ask before adding one.
 
@@ -99,7 +159,8 @@ Unit and component tests use Vitest with Testing Library; see `vitest.config.mts
 - The file extension picks the environment: `*.test.ts` runs in Node (the `unit` project) and `*.test.tsx` runs in jsdom (the `component` project, with `vitest.setup.ts`).
 - Globals are off: import `describe`, `test`, `expect`, and `vi` from `vitest`. `vitest.setup.ts` handles Testing Library cleanup.
 - Query components by role, as in the E2E tests (`screen.getByRole`).
-- Don't unit test async Server Components; Vitest can't render them. Cover them with E2E tests, and move their logic into `lib/` functions that can be unit tested.
+- Don't unit test async Server Components; Vitest can't render them. Cover them with E2E tests, and move their logic into `lib/` functions that can be unit tested. Synchronous Server Components that only read local data (such as the studio pages) can be rendered in jsdom.
+- jsdom lacks some browser APIs the app uses: `window.matchMedia` (stub it with `vi.stubGlobal` in the test) and modal `<dialog>` behavior (test the drawer in Playwright instead). Mock `next/navigation`'s `usePathname` with `vi.mock` for components that read the URL.
 
 ### E2E conventions (Playwright)
 
@@ -110,6 +171,9 @@ Unit and component tests use Vitest with Testing Library; see `vitest.config.mts
 - Use web-first assertions (`await expect(locator).toBeVisible()`), which retry. Never use `page.waitForTimeout` or fixed sleeps.
 - Keep tests independent: no shared state or required order between tests.
 - Only Chromium is configured. Ask before adding browsers (`npx playwright install` downloads them) or Playwright plugins such as `@next/playwright`.
+- Accessibility scans use `@axe-core/playwright` in `tests/e2e/accessibility.spec.ts`. Add new pages and new interactive states (such as an open dialog) to it, in both themes.
+- Theme tests set a saved preference with `page.addInitScript(() => localStorage.setItem("ai-spec-studio:theme", "light"))` before `goto`, and emulate a light OS (`test.use({ colorScheme: "light" })`) to prove the page ignores it. Two pages from the same `context` test cross-tab sync. To see the page before hydration, block the app bundles with `page.route(/\/_next\/static\/chunks\/.*\.js/, (route) => route.abort())`.
+- The closed mobile drawer stays in the header's DOM, so `getByText` can match its hidden links. Prefer `getByRole`, which skips them.
 - Locally, tests run against the dev server. In CI (`CI=true`), `webServer` runs `npm run start` against the production build instead, so run `npm run build` first. To reproduce a CI run locally: `npm run build && CI=true npm run test:e2e`.
 - `webServer` reuses whatever is listening on its port outside CI. If a different app or another checkout of this repo is running there, stop it first or use another port (`PORT=3001 npm run test:e2e`).
 - Reports and artifacts (`playwright-report/`, `test-results/`, and Playwright MCP output in `.playwright-mcp/`) are gitignored. Don't commit them.
