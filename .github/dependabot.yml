@@ -15,6 +15,16 @@ updates:
       # Types track the Node major in .nvmrc; bump both together by hand.
       - dependency-name: "@types/node"
         update-types: ["version-update:semver-major"]
+      # drizzle-orm and drizzle-kit are 0.x, where a minor release can break
+      # things, and the migrator's journal and hash behavior is pinned by
+      # scripts/db/. Upgrade them by hand, together, with a migration review;
+      # patch releases still come through.
+      - dependency-name: "drizzle-orm"
+        update-types:
+          ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "drizzle-kit"
+        update-types:
+          ["version-update:semver-major", "version-update:semver-minor"]
     groups:
       # eslint-config-next must match the next version exactly.
       nextjs:

@@ -13,13 +13,21 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test:e2e": "playwright test",
-    "test:unit": "vitest run",
-    "test:unit:watch": "vitest"
+    "test:unit": "vitest run --project unit --project component",
+    "test:unit:watch": "vitest --project unit --project component",
+    "test:integration": "AI_SPEC_STUDIO_INTEGRATION=1 vitest run --project integration",
+    "db:generate": "drizzle-kit generate",
+    "db:check": "drizzle-kit check",
+    "db:migrate": "drizzle-kit migrate",
+    "db:migrate:test": "tsx scripts/db/migrate-test-database.ts"
   },
   "dependencies": {
+    "drizzle-orm": "0.45.4",
     "next": "16.4.3",
+    "pg": "^8.23.1",
     "react": "19.3.1",
-    "react-dom": "19.3.1"
+    "react-dom": "19.3.1",
+    "server-only": "0.0.1"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.14.0",
@@ -28,10 +36,12 @@
     "@testing-library/dom": "^10.4.2",
     "@testing-library/react": "^16.3.3",
     "@types/node": "^24",
+    "@types/pg": "^8.23.1",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@vitejs/plugin-react": "^6.1.2",
     "babel-plugin-react-compiler": "1.0.0",
+    "drizzle-kit": "0.31.11",
     "eslint": "^10",
     "eslint-config-next": "16.4.3",
     "eslint-config-prettier": "^10.1.8",
@@ -39,6 +49,7 @@
     "prettier": "3.9.10",
     "prettier-plugin-tailwindcss": "^0.8.1",
     "tailwindcss": "^4",
+    "tsx": "^4.23.15",
     "typescript": "^5",
     "vitest": "^5.0.5"
   }

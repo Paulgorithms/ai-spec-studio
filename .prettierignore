@@ -5,3 +5,7 @@ package-lock.json
 
 # Rewritten by `next dev`; formatting it would churn on every dev run.
 AGENTS.md
+
+# Written by Drizzle Kit (npm run db:generate). Never reformat: the migrator
+# records a SHA-256 of each migration file, and the snapshots are its own.
+drizzle/

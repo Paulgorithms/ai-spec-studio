@@ -1,4 +1,6 @@
 # Gitignored files Claude Code copies into each new worktree (`claude --worktree`).
-# Uses .gitignore syntax; only files that are also gitignored are copied, so the
-# tracked .env.example is skipped.
-.env*
+# Uses .gitignore syntax; only files that are also gitignored are copied.
+#
+# Intentionally empty. Never list .env* files here: .env.local holds database
+# credentials, which are provisioned by hand only into worktrees approved for
+# database work (scripts/db/README.md, "Create .env.local").
