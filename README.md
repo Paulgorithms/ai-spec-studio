@@ -95,7 +95,7 @@ claude --worktree feature-name
 
 The worktree is created under `.claude/worktrees/feature-name/` (gitignored), on a new branch `worktree-feature-name` that starts from `origin/main`. `--worktree` exits with an error until you've accepted the trust prompt above.
 
-- **Env files come along.** `.worktreeinclude` copies your gitignored `.env*` files (such as `.env.local`) from your project folder into each new worktree. It copies only files that exist there, and only when the worktree is created, so after changing `.env.local`, update the worktree's copy too.
+- **Env files don't come along.** New worktrees start without `.env.local`, on purpose: it holds database credentials. `.worktreeinclude` lists no `.env*` files; keep it that way. The app runs without `.env.local` until a feature needs the database. For a worktree that does database work, create its `.env.local` yourself, as described in [`scripts/db/README.md`](scripts/db/README.md#6-create-envlocal), and only in worktrees you've approved for that.
 - **Branch from your current work instead.** To start worktrees from your local `HEAD` rather than `origin/main`, set `worktree.baseRef` in your own `.claude/settings.local.json`:
 
   ```json

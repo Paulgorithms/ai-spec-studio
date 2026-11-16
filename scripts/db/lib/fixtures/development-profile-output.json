@@ -1,0 +1,569 @@
+{
+  "pre": [
+    {
+      "pass": true,
+      "label": "files: the journal has exactly one entry, 0000_initial_schema"
+    },
+    {
+      "pass": true,
+      "label": "files: 0000_initial_schema.sql matches the reviewed SHA-256"
+    },
+    {
+      "pass": true,
+      "label": "environment: no PG*, NODE_TLS_REJECT_UNAUTHORIZED, or NODE_EXTRA_CA_CERTS variables"
+    },
+    {
+      "pass": true,
+      "label": "environment: no PGBINARY or PGREPLICATION"
+    },
+    {
+      "pass": true,
+      "label": "target: DATABASE_MIGRATION_URL is ai_spec_studio_migrator on loopback port 5432, database ai_spec_studio_dev, TLS off"
+    },
+    {
+      "pass": true,
+      "label": "connected as the migrator"
+    },
+    {
+      "pass": true,
+      "label": "server: PostgreSQL 18"
+    },
+    {
+      "pass": true,
+      "label": "server: loopback endpoint, port 5432"
+    },
+    {
+      "pass": true,
+      "label": "server: session is not using TLS"
+    },
+    {
+      "pass": true,
+      "label": "session: current_user and session_user are ai_spec_studio_migrator"
+    },
+    {
+      "pass": true,
+      "label": "session: current_database() is ai_spec_studio_dev"
+    },
+    {
+      "pass": true,
+      "label": "session: authenticated with SCRAM-SHA-256"
+    },
+    {
+      "pass": true,
+      "label": "session: read-only transaction"
+    },
+    {
+      "pass": true,
+      "label": "session: search_path is \"$user\", public and current_schema() is public"
+    },
+    {
+      "pass": true,
+      "label": "role: no superuser, CREATEROLE, CREATEDB, REPLICATION, or BYPASSRLS"
+    },
+    {
+      "pass": true,
+      "label": "database: labeled app.environment=development"
+    },
+    {
+      "pass": true,
+      "label": "database: no schema named ai_spec_studio_migrator (it would come first in search_path)"
+    },
+    {
+      "pass": true,
+      "label": "database: the only non-system schemas are public"
+    },
+    {
+      "pass": true,
+      "label": "privileges: CREATE on database ai_spec_studio_dev (for the drizzle schema)"
+    },
+    {
+      "pass": true,
+      "label": "privileges: USAGE and CREATE on schema public"
+    },
+    {
+      "pass": true,
+      "label": "state: public.projects and public.specifications don't exist"
+    },
+    {
+      "pass": true,
+      "label": "state: no drizzle migration journal"
+    },
+    {
+      "pass": true,
+      "label": "state: schema public is empty"
+    },
+    {
+      "pass": true,
+      "label": "concurrency: no other session is connected as the migrator"
+    },
+    {
+      "pass": true,
+      "label": "regex: the slug pattern gives the expected result for all 17 cases"
+    },
+    {
+      "pass": true,
+      "label": "regex: the key pattern gives the expected result for all 12 cases"
+    },
+    {
+      "pass": true,
+      "label": "pool closed"
+    }
+  ],
+  "post": [
+    {
+      "pass": true,
+      "label": "files: the journal has exactly one entry, 0000_initial_schema"
+    },
+    {
+      "pass": true,
+      "label": "files: 0000_initial_schema.sql matches the reviewed SHA-256"
+    },
+    {
+      "pass": true,
+      "label": "environment: no PG*, NODE_TLS_REJECT_UNAUTHORIZED, or NODE_EXTRA_CA_CERTS variables"
+    },
+    {
+      "pass": true,
+      "label": "environment: no PGBINARY or PGREPLICATION"
+    },
+    {
+      "pass": true,
+      "label": "target: DATABASE_MIGRATION_URL is ai_spec_studio_migrator on loopback port 5432, database ai_spec_studio_dev, TLS off"
+    },
+    {
+      "pass": true,
+      "label": "connected as the migrator"
+    },
+    {
+      "pass": true,
+      "label": "server: PostgreSQL 18"
+    },
+    {
+      "pass": true,
+      "label": "server: loopback endpoint, port 5432"
+    },
+    {
+      "pass": true,
+      "label": "server: session is not using TLS"
+    },
+    {
+      "pass": true,
+      "label": "session: current_user and session_user are ai_spec_studio_migrator"
+    },
+    {
+      "pass": true,
+      "label": "session: current_database() is ai_spec_studio_dev"
+    },
+    {
+      "pass": true,
+      "label": "session: authenticated with SCRAM-SHA-256"
+    },
+    {
+      "pass": true,
+      "label": "session: read-only transaction"
+    },
+    {
+      "pass": true,
+      "label": "session: search_path is \"$user\", public and current_schema() is public"
+    },
+    {
+      "pass": true,
+      "label": "role: no superuser, CREATEROLE, CREATEDB, REPLICATION, or BYPASSRLS"
+    },
+    {
+      "pass": true,
+      "label": "database: labeled app.environment=development"
+    },
+    {
+      "pass": true,
+      "label": "database: no schema named ai_spec_studio_migrator (it would come first in search_path)"
+    },
+    {
+      "pass": true,
+      "label": "database: the only non-system schemas are drizzle and public"
+    },
+    {
+      "pass": true,
+      "label": "tables: exactly projects and specifications in public, owned by ai_spec_studio_migrator, no row-level security"
+    },
+    {
+      "pass": true,
+      "label": "columns: names, order, types, NOT NULL, and defaults as reviewed"
+    },
+    {
+      "pass": true,
+      "label": "constraints: primary keys, UNIQUE, CHECK, and the RESTRICT foreign key as reviewed"
+    },
+    {
+      "pass": true,
+      "label": "constraints: exactly one NOT NULL constraint for each of the 14 columns"
+    },
+    {
+      "pass": true,
+      "label": "indexes: exactly the six reviewed indexes, with updated_at DESC"
+    },
+    {
+      "pass": true,
+      "label": "objects: no triggers or functions in public or drizzle"
+    },
+    {
+      "pass": true,
+      "label": "grants: ai_spec_studio_app has exactly SELECT, INSERT, UPDATE, DELETE on both tables"
+    },
+    {
+      "pass": true,
+      "label": "grants: ai_spec_studio_test and PUBLIC have no table privileges"
+    },
+    {
+      "pass": true,
+      "label": "journal: drizzle schema and __drizzle_migrations owned by ai_spec_studio_migrator"
+    },
+    {
+      "pass": true,
+      "label": "journal: the app and test roles can't use the drizzle schema; the app can't create in public"
+    },
+    {
+      "pass": true,
+      "label": "journal: exactly one applied migration, with the hash and timestamp of 0000_initial_schema"
+    },
+    {
+      "pass": true,
+      "label": "pool closed"
+    }
+  ],
+  "constraints": [
+    {
+      "pass": true,
+      "label": "files: the journal has exactly one entry, 0000_initial_schema"
+    },
+    {
+      "pass": true,
+      "label": "files: 0000_initial_schema.sql matches the reviewed SHA-256"
+    },
+    {
+      "pass": true,
+      "label": "environment: no PG*, NODE_TLS_REJECT_UNAUTHORIZED, or NODE_EXTRA_CA_CERTS variables"
+    },
+    {
+      "pass": true,
+      "label": "environment: no PGBINARY or PGREPLICATION"
+    },
+    {
+      "pass": true,
+      "label": "target: DATABASE_MIGRATION_URL is ai_spec_studio_migrator on loopback port 5432, database ai_spec_studio_dev, TLS off"
+    },
+    {
+      "pass": true,
+      "label": "connected as the migrator"
+    },
+    {
+      "pass": true,
+      "label": "server: PostgreSQL 18"
+    },
+    {
+      "pass": true,
+      "label": "server: loopback endpoint, port 5432"
+    },
+    {
+      "pass": true,
+      "label": "server: session is not using TLS"
+    },
+    {
+      "pass": true,
+      "label": "session: current_user and session_user are ai_spec_studio_migrator"
+    },
+    {
+      "pass": true,
+      "label": "session: current_database() is ai_spec_studio_dev"
+    },
+    {
+      "pass": true,
+      "label": "session: authenticated with SCRAM-SHA-256"
+    },
+    {
+      "pass": true,
+      "label": "session: read-only transaction"
+    },
+    {
+      "pass": true,
+      "label": "session: search_path is \"$user\", public and current_schema() is public"
+    },
+    {
+      "pass": true,
+      "label": "role: no superuser, CREATEROLE, CREATEDB, REPLICATION, or BYPASSRLS"
+    },
+    {
+      "pass": true,
+      "label": "database: labeled app.environment=development"
+    },
+    {
+      "pass": true,
+      "label": "database: no schema named ai_spec_studio_migrator (it would come first in search_path)"
+    },
+    {
+      "pass": true,
+      "label": "database: the only non-system schemas are drizzle and public"
+    },
+    {
+      "pass": true,
+      "label": "constraint projects.projects_created_at_not_null [n]: expected",
+      "detail": "NOT NULL created_at"
+    },
+    {
+      "pass": true,
+      "label": "constraint projects.projects_description_not_null [n]: expected",
+      "detail": "NOT NULL description"
+    },
+    {
+      "pass": true,
+      "label": "constraint projects.projects_id_not_null [n]: expected",
+      "detail": "NOT NULL id"
+    },
+    {
+      "pass": true,
+      "label": "constraint projects.projects_name_not_null [n]: expected",
+      "detail": "NOT NULL name"
+    },
+    {
+      "pass": true,
+      "label": "constraint projects.projects_pkey [p]: expected",
+      "detail": "PRIMARY KEY (id)"
+    },
+    {
+      "pass": true,
+      "label": "constraint projects.projects_slug_format_check [c]: expected",
+      "detail": "CHECK ((slug ~ '^[a-z0-9]+(-[a-z0-9]+)*$'::text))"
+    },
+    {
+      "pass": true,
+      "label": "constraint projects.projects_slug_not_null [n]: expected",
+      "detail": "NOT NULL slug"
+    },
+    {
+      "pass": true,
+      "label": "constraint projects.projects_slug_unique [u]: expected",
+      "detail": "UNIQUE (slug)"
+    },
+    {
+      "pass": true,
+      "label": "constraint projects.projects_updated_at_not_null [n]: expected",
+      "detail": "NOT NULL updated_at"
+    },
+    {
+      "pass": true,
+      "label": "constraint specifications.specifications_created_at_not_null [n]: expected",
+      "detail": "NOT NULL created_at"
+    },
+    {
+      "pass": true,
+      "label": "constraint specifications.specifications_id_not_null [n]: expected",
+      "detail": "NOT NULL id"
+    },
+    {
+      "pass": true,
+      "label": "constraint specifications.specifications_key_format_check [c]: expected",
+      "detail": "CHECK ((key ~ '^SPEC-[0-9]{3,}$'::text))"
+    },
+    {
+      "pass": true,
+      "label": "constraint specifications.specifications_key_not_null [n]: expected",
+      "detail": "NOT NULL key"
+    },
+    {
+      "pass": true,
+      "label": "constraint specifications.specifications_key_unique [u]: expected",
+      "detail": "UNIQUE (key)"
+    },
+    {
+      "pass": true,
+      "label": "constraint specifications.specifications_pkey [p]: expected",
+      "detail": "PRIMARY KEY (id)"
+    },
+    {
+      "pass": true,
+      "label": "constraint specifications.specifications_project_id_fkey [f]: expected",
+      "detail": "FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE RESTRICT"
+    },
+    {
+      "pass": true,
+      "label": "constraint specifications.specifications_project_id_not_null [n]: expected",
+      "detail": "NOT NULL project_id"
+    },
+    {
+      "pass": true,
+      "label": "constraint specifications.specifications_status_check [c]: expected",
+      "detail": "CHECK ((status = ANY (ARRAY['draft'::text, 'in-review'::text, 'approved'::text])))"
+    },
+    {
+      "pass": true,
+      "label": "constraint specifications.specifications_status_not_null [n]: expected",
+      "detail": "NOT NULL status"
+    },
+    {
+      "pass": true,
+      "label": "constraint specifications.specifications_summary_not_null [n]: expected",
+      "detail": "NOT NULL summary"
+    },
+    {
+      "pass": true,
+      "label": "constraint specifications.specifications_title_not_null [n]: expected",
+      "detail": "NOT NULL title"
+    },
+    {
+      "pass": true,
+      "label": "constraint specifications.specifications_updated_at_not_null [n]: expected",
+      "detail": "NOT NULL updated_at"
+    },
+    {
+      "pass": true,
+      "label": "constraints: primary keys, UNIQUE, CHECK, and the RESTRICT foreign key as reviewed"
+    },
+    {
+      "pass": true,
+      "label": "constraints: exactly one NOT NULL constraint for each of the 14 columns"
+    },
+    {
+      "pass": true,
+      "label": "pool closed"
+    }
+  ],
+  "pre-failing": [
+    {
+      "pass": true,
+      "label": "files: the journal has exactly one entry, 0000_initial_schema"
+    },
+    {
+      "pass": true,
+      "label": "files: 0000_initial_schema.sql matches the reviewed SHA-256"
+    },
+    {
+      "pass": true,
+      "label": "environment: no PG*, NODE_TLS_REJECT_UNAUTHORIZED, or NODE_EXTRA_CA_CERTS variables"
+    },
+    {
+      "pass": true,
+      "label": "environment: no PGBINARY or PGREPLICATION"
+    },
+    {
+      "pass": true,
+      "label": "target: DATABASE_MIGRATION_URL is ai_spec_studio_migrator on loopback port 5432, database ai_spec_studio_dev, TLS off"
+    },
+    {
+      "pass": true,
+      "label": "connected as the migrator"
+    },
+    {
+      "pass": true,
+      "label": "server: PostgreSQL 18"
+    },
+    {
+      "pass": true,
+      "label": "server: loopback endpoint, port 5432"
+    },
+    {
+      "pass": true,
+      "label": "server: session is not using TLS"
+    },
+    {
+      "pass": true,
+      "label": "session: current_user and session_user are ai_spec_studio_migrator"
+    },
+    {
+      "pass": true,
+      "label": "session: current_database() is ai_spec_studio_dev"
+    },
+    {
+      "pass": true,
+      "label": "session: authenticated with SCRAM-SHA-256"
+    },
+    {
+      "pass": true,
+      "label": "session: read-only transaction"
+    },
+    {
+      "pass": true,
+      "label": "session: search_path is \"$user\", public and current_schema() is public"
+    },
+    {
+      "pass": true,
+      "label": "role: no superuser, CREATEROLE, CREATEDB, REPLICATION, or BYPASSRLS"
+    },
+    {
+      "pass": true,
+      "label": "database: labeled app.environment=development"
+    },
+    {
+      "pass": true,
+      "label": "database: no schema named ai_spec_studio_migrator (it would come first in search_path)"
+    },
+    {
+      "pass": true,
+      "label": "database: the only non-system schemas are public"
+    },
+    {
+      "pass": true,
+      "label": "privileges: CREATE on database ai_spec_studio_dev (for the drizzle schema)"
+    },
+    {
+      "pass": true,
+      "label": "privileges: USAGE and CREATE on schema public"
+    },
+    {
+      "pass": true,
+      "label": "state: public.projects and public.specifications don't exist"
+    },
+    {
+      "pass": true,
+      "label": "state: no drizzle migration journal"
+    },
+    {
+      "pass": true,
+      "label": "state: schema public is empty"
+    },
+    {
+      "pass": false,
+      "label": "concurrency: no other session is connected as the migrator"
+    },
+    {
+      "pass": false,
+      "label": "regex: the slug pattern gives the expected result for all 17 cases",
+      "detail": "failing cases: 10"
+    },
+    {
+      "pass": false,
+      "label": "regex: the key pattern gives the expected result for all 12 cases",
+      "detail": "failing cases: 22"
+    },
+    {
+      "pass": true,
+      "label": "pool closed"
+    }
+  ],
+  "closed": [
+    {
+      "pass": true,
+      "label": "files: the journal has exactly one entry, 0000_initial_schema"
+    },
+    {
+      "pass": true,
+      "label": "files: 0000_initial_schema.sql matches the reviewed SHA-256"
+    },
+    {
+      "pass": false,
+      "label": "environment: no PG*, NODE_TLS_REJECT_UNAUTHORIZED, or NODE_EXTRA_CA_CERTS variables",
+      "detail": "set: PGHOST"
+    },
+    {
+      "pass": true,
+      "label": "environment: no PGBINARY or PGREPLICATION"
+    },
+    {
+      "pass": true,
+      "label": "target: DATABASE_MIGRATION_URL is ai_spec_studio_migrator on loopback port 5432, database ai_spec_studio_dev, TLS off"
+    },
+    {
+      "pass": false,
+      "label": "connection skipped (a check above failed)"
+    }
+  ]
+}
