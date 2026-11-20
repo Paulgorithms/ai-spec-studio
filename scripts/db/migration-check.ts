@@ -8,16 +8,17 @@
 // (constraints is a diagnostic: it lists every constraint in schema public as
 // PostgreSQL stores it.)
 //
-// Loads .env.local with Node's process.loadEnvFile() (a variable already set
-// in the shell wins), connects once as DATABASE_MIGRATION_URL, and prints
-// fixed PASS/FAIL labels with codes. Never prints URLs, passwords, or driver
-// messages, and never writes to the database.
+// Loads .env.local when it exists (lib/local-env.ts: a variable already set
+// in the shell wins; no file means the shell must set everything), connects
+// once as DATABASE_MIGRATION_URL, and prints fixed PASS/FAIL labels with
+// codes. Never prints URLs, passwords, or driver messages, and never writes
+// to the database.
 // Exit code: 0 when every check passes, 1 when any fails, 2 for bad usage.
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { loadEnvFile } from "node:process";
 import { Pool } from "pg";
 import { errorKind, formatResults } from "./lib/live-verification";
+import { loadLocalEnv } from "./lib/local-env";
 import {
   runMigrationChecks,
   type MigrationFiles,
@@ -62,10 +63,9 @@ async function main(): Promise<number> {
     );
     return 1;
   }
-  try {
-    loadEnvFile(".env.local");
-  } catch (error) {
-    console.log(`FAIL  could not load .env.local (${errorKind(error)})`);
+  const localEnv = loadLocalEnv();
+  if (!localEnv.ok) {
+    console.log(`FAIL  could not load .env.local (${localEnv.reason})`);
     return 1;
   }
   const results = await runMigrationChecks(
