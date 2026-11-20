@@ -16,7 +16,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   SCRAM_MAX_ITERATIONS,
   SCRAM_MIN_ITERATIONS,
@@ -24,6 +24,13 @@ import {
 } from "./ci-credentials";
 import { LOCAL_PORT } from "./migration-checks";
 import { TEST_DATABASE_TARGET, TEST_PROFILE } from "./test-database-target";
+
+// These tests start real processes (bash, tsx, stubs) many times over. In
+// the full suite, with every file running in parallel, they take several
+// times longer than alone, close to Vitest's 5-second default, so this file
+// gets 30 seconds per test. vi.setConfig applies to this file only: Vitest
+// resets it after each file.
+vi.setConfig({ testTimeout: 30_000 });
 
 const HBA_PATH = "scripts/db/ci/pg_hba.conf";
 const CONF_PATH = "scripts/db/ci/postgresql-ci.conf";
@@ -2653,4 +2660,8 @@ describe("ci-provision-postgres.sh: mutation tests", () => {
       expect(reported.has(code), code).toBe(true);
     }
   });
+});
+
+test("runs every test with this file's 30-second timeout", ({ task }) => {
+  expect(task.timeout).toBe(30_000);
 });

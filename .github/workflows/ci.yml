@@ -67,3 +67,232 @@ jobs:
             test-results/
           retention-days: 14
           if-no-files-found: ignore
+
+  # Disposable PostgreSQL 18 on the runner image's own cluster, for the
+  # integration tests. Separate from the job above, on its own VM. No
+  # secrets: every credential is generated for this run, masked, kept in
+  # RUNNER_TEMP, and removed by the last step. See scripts/db/README.md
+  # (CI integration tests) for the sequence and what each step proves.
+  postgres-integration:
+    name: PostgreSQL integration
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      # Before any credential exists, so install scripts never see one.
+      - name: Install dependencies
+        run: npm ci
+
+      # Read only. Prints what the later gates depend on; fails only if a
+      # database variable is already set (names are printed, never values).
+      - name: Runner and PostgreSQL preflight
+        run: |
+          grep -E '^(ID|VERSION_ID)=' /etc/os-release
+          printf 'ImageOS: %s\n' "${ImageOS:-unset}"
+          printf 'node %s, npm %s\n' "$(node --version)" "$(npm --version)"
+          printf 'bash %s\n' "$BASH_VERSION"
+          pg_lsclusters --no-header
+          /usr/lib/postgresql/18/bin/postgres --version
+          printf 'postgresql@18-main: %s; postgresql.service: %s\n' \
+            "$(systemctl show -p ActiveState --value postgresql@18-main)" \
+            "$(systemctl show -p UnitFileState --value postgresql.service)"
+          printf 'listening on 5432: [%s]\n' "$(ss -Hltn 'sport = :5432')"
+          for name in $(compgen -e); do
+            case "$name" in
+              PG*|POSTGRES_*|postgres_*|DATABASE_*|TEST_DATABASE_URL)
+                printf 'FAIL  a database variable is set: %s\n' "$name"
+                exit 1
+                ;;
+            esac
+          done
+
+      - name: Generate disposable credentials
+        run: ./node_modules/.bin/tsx scripts/db/ci-credentials.ts
+
+      - name: Provision PostgreSQL
+        timeout-minutes: 5
+        run: bash -p scripts/db/ci-provision-postgres.sh
+
+      - name: Expect a second provisioning to be refused
+        run: bash -p scripts/db/ci-expect-refusals.sh provision
+
+      - name: Expect a second ci-setup.sql run to be refused
+        run: bash -p scripts/db/ci-expect-refusals.sh sql
+
+      # Reads the URL from its file itself; the environment holds none.
+      - name: Verify server identity and negative security probes
+        timeout-minutes: 3
+        run: ./node_modules/.bin/tsx scripts/db/ci-verify-postgres.ts
+
+      # test-database-check.ts has one mode, pre, which reports the state
+      # (fresh, applied, or unexpected) and exits 0 for both fresh and
+      # applied, so the state line itself is checked.
+      - name: Check the test database is fresh
+        run: |
+          url="$(dd if="$RUNNER_TEMP/ai-spec-studio-db/test-database-url" iflag=nofollow status=none)"
+          if report="$(TEST_DATABASE_URL="$url" ./node_modules/.bin/tsx scripts/db/test-database-check.ts pre)"; then status=0; else status=$?; fi
+          unset url
+          printf '%s\n' "$report"
+          [ "$status" -eq 0 ] || exit 1
+          states=0
+          matched=0
+          while IFS= read -r line; do
+            case "$line" in
+              "Test database state: "*)
+                states=$((states + 1))
+                if [ "$line" = "Test database state: fresh" ]; then matched=1; fi
+                ;;
+            esac
+          done <<<"$report"
+          if [ "$states" -ne 1 ] || [ "$matched" -ne 1 ]; then
+            printf '%s\n' 'FAIL  expected exactly one state line: fresh'
+            exit 1
+          fi
+
+      - name: Apply the test database migration
+        timeout-minutes: 3
+        run: |
+          url="$(dd if="$RUNNER_TEMP/ai-spec-studio-db/test-database-url" iflag=nofollow status=none)"
+          TEST_DATABASE_URL="$url" npm run db:migrate:test
+
+      - name: Check the migration is applied
+        run: |
+          url="$(dd if="$RUNNER_TEMP/ai-spec-studio-db/test-database-url" iflag=nofollow status=none)"
+          if report="$(TEST_DATABASE_URL="$url" ./node_modules/.bin/tsx scripts/db/test-database-check.ts pre)"; then status=0; else status=$?; fi
+          unset url
+          printf '%s\n' "$report"
+          [ "$status" -eq 0 ] || exit 1
+          states=0
+          matched=0
+          while IFS= read -r line; do
+            case "$line" in
+              "Test database state: "*)
+                states=$((states + 1))
+                if [ "$line" = "Test database state: applied" ]; then matched=1; fi
+                ;;
+            esac
+          done <<<"$report"
+          if [ "$states" -ne 1 ] || [ "$matched" -ne 1 ]; then
+            printf '%s\n' 'FAIL  expected exactly one state line: applied'
+            exit 1
+          fi
+
+      - name: Run the PostgreSQL integration tests
+        timeout-minutes: 8
+        run: |
+          url="$(dd if="$RUNNER_TEMP/ai-spec-studio-db/test-database-url" iflag=nofollow status=none)"
+          TEST_DATABASE_URL="$url" npm run test:integration -- --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/integration-results.json"
+
+      # Vitest's JSON report (5.x): numPendingTests counts skipped tests too,
+      # and each test's status must be "passed". Counts only are printed;
+      # failure messages in the report are never read out.
+      - name: Check the integration test results
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const file = process.argv[1];
+            const problems = [];
+            let report;
+            try {
+              const entry = fs.lstatSync(file);
+              if (!entry.isFile() || entry.isSymbolicLink()) throw new Error("not a file");
+              report = JSON.parse(fs.readFileSync(file, "utf8"));
+            } catch {
+              console.log("FAIL  INTEGRATION_RESULTS_UNREADABLE");
+              process.exit(1);
+            }
+            const count = (value) => (Number.isInteger(value) && value >= 0 ? value : -1);
+            const files = Array.isArray(report.testResults) ? report.testResults : [];
+            const tests = files.flatMap((f) => (Array.isArray(f.assertionResults) ? f.assertionResults : []));
+            const total = count(report.numTotalTests);
+            if (report.success !== true) problems.push("NOT_SUCCESSFUL");
+            if (count(report.numFailedTests) !== 0) problems.push("FAILED_TESTS");
+            if (count(report.numPendingTests) !== 0) problems.push("SKIPPED_OR_PENDING_TESTS");
+            if (count(report.numTodoTests) !== 0) problems.push("TODO_TESTS");
+            if (count(report.numFailedTestSuites) !== 0 || count(report.numPendingTestSuites) !== 0) problems.push("SUITES_NOT_PASSED");
+            if (total < 65) problems.push("FEWER_THAN_65_TESTS");
+            if (count(report.numPassedTests) !== total || tests.length !== total) problems.push("INCONSISTENT_TOTALS");
+            if (tests.some((t) => t.status !== "passed")) problems.push("TEST_NOT_PASSED");
+            if (files.length === 0 || files.some((f) => f.status !== "passed")) problems.push("FILE_NOT_PASSED");
+            if (problems.length > 0) {
+              console.log(`FAIL  ${problems.join(", ")}`);
+              process.exit(1);
+            }
+            console.log(`PASS  integration tests: ${total} of ${total} passed in ${files.length} files`);
+          ' "$RUNNER_TEMP/integration-results.json"
+
+      # Always attempted, even after a failure or a cancellation, and limited
+      # to 3 minutes. Two independent parts, each attempted whatever happened
+      # to the other: the files (only the credential directory and the results
+      # file, and only under a plain, canonical RUNNER_TEMP) and the service
+      # (only postgresql@18-main, and only on a GitHub-hosted Linux runner).
+      # No database command. Every problem is reported and fails the step.
+      - name: Clean up credentials and stop PostgreSQL
+        if: ${{ always() }}
+        timeout-minutes: 3
+        run: |
+          status=0
+          problem() {
+            printf 'FAIL  %s\n' "$1"
+            status=1
+          }
+
+          temp="${RUNNER_TEMP:-}"
+          temp_ok=1
+          if [[ ! "$temp" =~ ^/[A-Za-z0-9._/-]+$ ]] || [[ "$temp" == *//* || "$temp" == */./* || "$temp" == */../* || "$temp" == */. || "$temp" == */.. || "$temp" == */ ]]; then
+            temp_ok=0
+          elif ! canonical="$(cd -P -- "$temp" && pwd -P)" || [ "$canonical" != "$temp" ]; then
+            temp_ok=0
+          fi
+          if [ "$temp_ok" -ne 1 ]; then
+            problem CLEANUP_RUNNER_TEMP
+          else
+            dir="$temp/ai-spec-studio-db"
+            if [ -L "$dir" ]; then
+              problem CLEANUP_CREDENTIALS_SYMLINK
+            elif [ -e "$dir" ]; then
+              if [ -d "$dir" ] && [ -O "$dir" ]; then
+                rm -r -- "$dir" || problem CLEANUP_CREDENTIALS
+              else
+                problem CLEANUP_CREDENTIALS_UNEXPECTED
+              fi
+            fi
+            results="$temp/integration-results.json"
+            if [ -L "$results" ]; then
+              problem CLEANUP_RESULTS_SYMLINK
+            elif [ -e "$results" ]; then
+              if [ -f "$results" ] && [ -O "$results" ]; then
+                rm -- "$results" || problem CLEANUP_RESULTS
+              else
+                problem CLEANUP_RESULTS_UNEXPECTED
+              fi
+            fi
+          fi
+
+          if [ "${GITHUB_ACTIONS:-}" != "true" ] || [ "${RUNNER_ENVIRONMENT:-}" != "github-hosted" ] || [ "${RUNNER_OS:-}" != "Linux" ]; then
+            problem CLEANUP_RUNNER
+          elif [ "$(systemctl show -p LoadState --value postgresql@18-main)" = "loaded" ] && [ "$(systemctl show -p ActiveState --value postgresql@18-main)" != "inactive" ]; then
+            if ! sudo -n systemctl stop postgresql@18-main || [ "$(systemctl show -p ActiveState --value postgresql@18-main)" != "inactive" ]; then
+              problem CLEANUP_STOP_POSTGRESQL
+            fi
+          fi
+
+          if [ "$status" -eq 0 ]; then
+            printf '%s\n' 'PASS  CLEANUP'
+          fi
+          exit "$status"

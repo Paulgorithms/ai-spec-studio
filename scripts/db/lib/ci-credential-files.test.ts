@@ -36,6 +36,13 @@ import {
 } from "./ci-credentials";
 import { checkTestDatabaseConfiguration } from "./test-database-target";
 
+// These tests start real processes (bash, tsx, stubs) many times over. In
+// the full suite, with every file running in parallel, they take several
+// times longer than alone, close to Vitest's 5-second default, so this file
+// gets 30 seconds per test. vi.setConfig applies to this file only: Vitest
+// resets it after each file.
+vi.setConfig({ testTimeout: 30_000 });
+
 // Real directories under the OS temp directory, laid out like a
 // GitHub-hosted runner's (see ci-runner.test.ts). The base is resolved first
 // so macOS's /var -> /private/var link doesn't look like an attack.
@@ -997,4 +1004,8 @@ describe("the entry script", () => {
     expect(result.status).toBe(2);
     expect(result.stdout).toBe("Usage: tsx scripts/db/ci-credentials.ts\n");
   });
+});
+
+test("runs every test with this file's 30-second timeout", ({ task }) => {
+  expect(task.timeout).toBe(30_000);
 });
