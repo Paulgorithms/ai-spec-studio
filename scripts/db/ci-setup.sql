@@ -91,39 +91,39 @@ DECLARE
 BEGIN
   -- Who and how: the built-in superuser, over the Unix socket.
   IF (session_user = 'postgres' AND current_user = 'postgres') IS NOT TRUE THEN
-    failures := failures || 'CI_SETUP_NOT_POSTGRES';
+    failures := array_append(failures, 'CI_SETUP_NOT_POSTGRES'::text);
   END IF;
   IF ((SELECT oid FROM pg_roles WHERE rolname = current_user) = 10) IS NOT TRUE THEN
-    failures := failures || 'CI_SETUP_NOT_BOOTSTRAP_SUPERUSER';
+    failures := array_append(failures, 'CI_SETUP_NOT_BOOTSTRAP_SUPERUSER'::text);
   END IF;
   IF (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) IS NOT TRUE THEN
-    failures := failures || 'CI_SETUP_NOT_SUPERUSER';
+    failures := array_append(failures, 'CI_SETUP_NOT_SUPERUSER'::text);
   END IF;
   IF (inet_server_addr() IS NULL AND inet_client_addr() IS NULL) IS NOT TRUE THEN
-    failures := failures || 'CI_SETUP_NOT_UNIX_SOCKET';
+    failures := array_append(failures, 'CI_SETUP_NOT_UNIX_SOCKET'::text);
   END IF;
 
   -- Which server: PostgreSQL 18, a primary, the packaged Ubuntu cluster.
   IF (current_setting('server_version_num')::int BETWEEN 180000 AND 189999) IS NOT TRUE THEN
-    failures := failures || 'CI_SETUP_SERVER_VERSION';
+    failures := array_append(failures, 'CI_SETUP_SERVER_VERSION'::text);
   END IF;
   IF pg_is_in_recovery() THEN
-    failures := failures || 'CI_SETUP_IN_RECOVERY';
+    failures := array_append(failures, 'CI_SETUP_IN_RECOVERY'::text);
   END IF;
   IF (current_setting('data_directory') = '/var/lib/postgresql/18/main') IS NOT TRUE THEN
-    failures := failures || 'CI_SETUP_DATA_DIRECTORY';
+    failures := array_append(failures, 'CI_SETUP_DATA_DIRECTORY'::text);
   END IF;
   IF (current_setting('config_file') = '/etc/postgresql/18/main/postgresql.conf') IS NOT TRUE THEN
-    failures := failures || 'CI_SETUP_CONFIG_FILE';
+    failures := array_append(failures, 'CI_SETUP_CONFIG_FILE'::text);
   END IF;
   IF (current_setting('hba_file') = '/etc/postgresql/18/main/pg_hba.conf') IS NOT TRUE THEN
-    failures := failures || 'CI_SETUP_HBA_FILE';
+    failures := array_append(failures, 'CI_SETUP_HBA_FILE'::text);
   END IF;
   IF (current_setting('cluster_name') = '18/main') IS NOT TRUE THEN
-    failures := failures || 'CI_SETUP_CLUSTER_NAME';
+    failures := array_append(failures, 'CI_SETUP_CLUSTER_NAME'::text);
   END IF;
   IF (current_setting('port') = '5432') IS NOT TRUE THEN
-    failures := failures || 'CI_SETUP_PORT';
+    failures := array_append(failures, 'CI_SETUP_PORT'::text);
   END IF;
 
   -- The settings from scripts/db/ci/postgresql-ci.conf, in effect and taken
@@ -133,7 +133,7 @@ BEGIN
       AND current_setting('password_encryption') = 'scram-sha-256'
       AND current_setting('log_min_error_statement') = 'panic'
       AND current_setting('log_statement') = 'none') IS NOT TRUE THEN
-    failures := failures || 'CI_SETUP_SETTINGS';
+    failures := array_append(failures, 'CI_SETUP_SETTINGS'::text);
   END IF;
   IF ((SELECT count(*) FROM pg_settings
        WHERE name IN ('listen_addresses', 'ssl', 'password_encryption',
@@ -141,18 +141,18 @@ BEGIN
          AND source = 'configuration file'
          AND sourcefile = ci_conf
          AND NOT pending_restart) = 5) IS NOT TRUE THEN
-    failures := failures || 'CI_SETUP_SETTINGS_SOURCE';
+    failures := array_append(failures, 'CI_SETUP_SETTINGS_SOURCE'::text);
   END IF;
   IF EXISTS (SELECT 1 FROM pg_file_settings WHERE error IS NOT NULL) THEN
-    failures := failures || 'CI_SETUP_CONFIG_ERRORS';
+    failures := array_append(failures, 'CI_SETUP_CONFIG_ERRORS'::text);
   END IF;
   IF (current_setting('shared_preload_libraries') = '') IS NOT TRUE THEN
-    failures := failures || 'CI_SETUP_PRELOAD_LIBRARIES';
+    failures := array_append(failures, 'CI_SETUP_PRELOAD_LIBRARIES'::text);
   END IF;
 
   -- The rules from scripts/db/ci/pg_hba.conf, exactly and in order.
   IF EXISTS (SELECT 1 FROM pg_hba_file_rules WHERE error IS NOT NULL) THEN
-    failures := failures || 'CI_SETUP_HBA_ERRORS';
+    failures := array_append(failures, 'CI_SETUP_HBA_ERRORS'::text);
   END IF;
   IF ((SELECT array_agg(
              format('%s|%s|%s|%s|%s|%s', type, database, user_name,
@@ -169,44 +169,44 @@ BEGIN
           'host|{all}|{all}|::|::|reject',
           'host|{replication}|{all}|::|::|reject'
         ]::text[]) IS NOT TRUE THEN
-    failures := failures || 'CI_SETUP_HBA_RULES';
+    failures := array_append(failures, 'CI_SETUP_HBA_RULES'::text);
   END IF;
   IF EXISTS (SELECT 1 FROM pg_hba_file_rules
              WHERE options IS NOT NULL
                 OR file_name IS DISTINCT FROM current_setting('hba_file')) THEN
-    failures := failures || 'CI_SETUP_HBA_OPTIONS';
+    failures := array_append(failures, 'CI_SETUP_HBA_OPTIONS'::text);
   END IF;
 
   -- A fresh cluster: built-in roles, databases, and tablespaces only.
   IF EXISTS (SELECT 1 FROM pg_roles
              WHERE oid <> 10 AND (oid >= 16384 OR rolname NOT LIKE 'pg\_%')) THEN
-    failures := failures || 'CI_SETUP_ROLES_NOT_FRESH';
+    failures := array_append(failures, 'CI_SETUP_ROLES_NOT_FRESH'::text);
   END IF;
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname LIKE 'ai\_spec\_studio\_%')
      OR EXISTS (SELECT 1 FROM pg_database WHERE datname LIKE 'ai\_spec\_studio\_%') THEN
-    failures := failures || 'CI_SETUP_PROJECT_OBJECTS_EXIST';
+    failures := array_append(failures, 'CI_SETUP_PROJECT_OBJECTS_EXIST'::text);
   END IF;
   IF ((SELECT array_agg(datname::text ORDER BY datname::text COLLATE "C") FROM pg_database)
       = ARRAY['postgres', 'template0', 'template1']::text[]) IS NOT TRUE THEN
-    failures := failures || 'CI_SETUP_DATABASES_NOT_FRESH';
+    failures := array_append(failures, 'CI_SETUP_DATABASES_NOT_FRESH'::text);
   END IF;
   IF EXISTS (SELECT 1 FROM pg_db_role_setting) THEN
-    failures := failures || 'CI_SETUP_SETTINGS_NOT_FRESH';
+    failures := array_append(failures, 'CI_SETUP_SETTINGS_NOT_FRESH'::text);
   END IF;
   IF ((SELECT array_agg(spcname::text ORDER BY spcname::text COLLATE "C") FROM pg_tablespace)
       = ARRAY['pg_default', 'pg_global']::text[]) IS NOT TRUE THEN
-    failures := failures || 'CI_SETUP_TABLESPACES_NOT_FRESH';
+    failures := array_append(failures, 'CI_SETUP_TABLESPACES_NOT_FRESH'::text);
   END IF;
   IF ((SELECT array_agg(extname::text ORDER BY extname::text COLLATE "C") FROM pg_extension)
       = ARRAY['plpgsql']::text[]) IS NOT TRUE THEN
-    failures := failures || 'CI_SETUP_EXTENSIONS_NOT_FRESH';
+    failures := array_append(failures, 'CI_SETUP_EXTENSIONS_NOT_FRESH'::text);
   END IF;
   IF EXISTS (SELECT 1 FROM pg_stat_activity
              WHERE backend_type = 'client backend' AND pid <> pg_backend_pid()) THEN
-    failures := failures || 'CI_SETUP_OTHER_SESSIONS';
+    failures := array_append(failures, 'CI_SETUP_OTHER_SESSIONS'::text);
   END IF;
   IF (SELECT rolpassword IS NULL FROM pg_authid WHERE oid = 10) IS NOT TRUE THEN
-    failures := failures || 'CI_SETUP_ADMIN_HAS_PASSWORD';
+    failures := array_append(failures, 'CI_SETUP_ADMIN_HAS_PASSWORD'::text);
   END IF;
 
   IF cardinality(failures) > 0 THEN
@@ -372,24 +372,24 @@ DECLARE
   failures text[] := ARRAY[]::text[];
 BEGIN
   IF (current_database() = 'ai_spec_studio_test' AND current_user = 'postgres') IS NOT TRUE THEN
-    failures := failures || 'CI_SETUP_TESTDB_SESSION';
+    failures := array_append(failures, 'CI_SETUP_TESTDB_SESSION'::text);
   END IF;
   IF ((SELECT array_agg(nspname::text ORDER BY nspname::text COLLATE "C") FROM pg_namespace
        WHERE nspname NOT LIKE 'pg\_%' AND nspname <> 'information_schema')
       = ARRAY['public']::text[]) IS NOT TRUE THEN
-    failures := failures || 'CI_SETUP_TESTDB_SCHEMAS';
+    failures := array_append(failures, 'CI_SETUP_TESTDB_SCHEMAS'::text);
   END IF;
   IF ((SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname = 'public')
       = 'pg_database_owner') IS NOT TRUE THEN
-    failures := failures || 'CI_SETUP_TESTDB_SCHEMA_OWNER';
+    failures := array_append(failures, 'CI_SETUP_TESTDB_SCHEMA_OWNER'::text);
   END IF;
   IF EXISTS (SELECT 1 FROM pg_class AS c JOIN pg_namespace AS n ON n.oid = c.relnamespace
              WHERE n.nspname = 'public') THEN
-    failures := failures || 'CI_SETUP_TESTDB_NOT_EMPTY';
+    failures := array_append(failures, 'CI_SETUP_TESTDB_NOT_EMPTY'::text);
   END IF;
   IF ((SELECT array_agg(extname::text ORDER BY extname::text COLLATE "C") FROM pg_extension)
       = ARRAY['plpgsql']::text[]) IS NOT TRUE THEN
-    failures := failures || 'CI_SETUP_TESTDB_EXTENSIONS';
+    failures := array_append(failures, 'CI_SETUP_TESTDB_EXTENSIONS'::text);
   END IF;
 
   IF cardinality(failures) > 0 THEN
@@ -411,33 +411,33 @@ BEGIN
          AND rolcanlogin AND NOT rolinherit AND NOT rolsuper AND NOT rolcreaterole
          AND NOT rolcreatedb AND NOT rolreplication AND NOT rolbypassrls
          AND rolconnlimit = 10 AND rolvaliduntil IS NULL) IS NOT TRUE THEN
-    failures := failures || 'CI_SETUP_FINAL_TEST_ROLE';
+    failures := array_append(failures, 'CI_SETUP_FINAL_TEST_ROLE'::text);
   END IF;
   IF (SELECT rolpassword LIKE 'SCRAM-SHA-256$%' FROM pg_authid
       WHERE rolname = 'ai_spec_studio_test') IS NOT TRUE THEN
-    failures := failures || 'CI_SETUP_FINAL_TEST_ROLE_SCRAM';
+    failures := array_append(failures, 'CI_SETUP_FINAL_TEST_ROLE_SCRAM'::text);
   END IF;
   IF ((SELECT count(*) FROM pg_authid
        WHERE rolname IN ('ai_spec_studio_app', 'ai_spec_studio_migrator')
          AND NOT rolcanlogin AND NOT rolinherit AND NOT rolsuper AND NOT rolcreaterole
          AND NOT rolcreatedb AND NOT rolreplication AND NOT rolbypassrls
          AND rolpassword IS NULL) = 2) IS NOT TRUE THEN
-    failures := failures || 'CI_SETUP_FINAL_NOLOGIN_ROLES';
+    failures := array_append(failures, 'CI_SETUP_FINAL_NOLOGIN_ROLES'::text);
   END IF;
   IF ((SELECT array_agg(rolname::text ORDER BY rolname::text COLLATE "C") FROM pg_roles
        WHERE oid >= 16384)
       = ARRAY['ai_spec_studio_app', 'ai_spec_studio_migrator', 'ai_spec_studio_test']::text[]) IS NOT TRUE THEN
-    failures := failures || 'CI_SETUP_FINAL_ROLES';
+    failures := array_append(failures, 'CI_SETUP_FINAL_ROLES'::text);
   END IF;
   IF EXISTS (SELECT 1 FROM pg_auth_members WHERE roleid >= 16384 OR member >= 16384) THEN
-    failures := failures || 'CI_SETUP_FINAL_MEMBERSHIPS';
+    failures := array_append(failures, 'CI_SETUP_FINAL_MEMBERSHIPS'::text);
   END IF;
   IF ((SELECT array_agg(datname::text ORDER BY datname::text COLLATE "C") FROM pg_database)
       = ARRAY['ai_spec_studio_test', 'postgres', 'template0', 'template1']::text[]) IS NOT TRUE THEN
-    failures := failures || 'CI_SETUP_FINAL_DATABASES';
+    failures := array_append(failures, 'CI_SETUP_FINAL_DATABASES'::text);
   END IF;
   IF ((SELECT datdba FROM pg_database WHERE oid = test_db) = 10) IS NOT TRUE THEN
-    failures := failures || 'CI_SETUP_FINAL_OWNER';
+    failures := array_append(failures, 'CI_SETUP_FINAL_OWNER'::text);
   END IF;
   -- The only role or database setting is the test database's label, at
   -- database level (setrole = 0), where the checks read it.
@@ -445,12 +445,12 @@ BEGIN
       AND EXISTS (SELECT 1 FROM pg_db_role_setting
                   WHERE setdatabase = test_db AND setrole = 0
                     AND setconfig = ARRAY['app.environment=test']::text[])) IS NOT TRUE THEN
-    failures := failures || 'CI_SETUP_FINAL_LABEL';
+    failures := array_append(failures, 'CI_SETUP_FINAL_LABEL'::text);
   END IF;
   IF (NOT has_database_privilege('public', 'ai_spec_studio_test', 'CONNECT')
       AND NOT has_database_privilege('public', 'ai_spec_studio_test', 'TEMPORARY')
       AND NOT has_database_privilege('public', 'ai_spec_studio_test', 'CREATE')) IS NOT TRUE THEN
-    failures := failures || 'CI_SETUP_FINAL_PUBLIC_PRIVILEGES';
+    failures := array_append(failures, 'CI_SETUP_FINAL_PUBLIC_PRIVILEGES'::text);
   END IF;
   IF (NOT has_database_privilege('ai_spec_studio_app', 'ai_spec_studio_test', 'CONNECT')
       AND NOT has_database_privilege('ai_spec_studio_app', 'ai_spec_studio_test', 'CREATE')
@@ -458,15 +458,15 @@ BEGIN
       AND NOT has_database_privilege('ai_spec_studio_migrator', 'ai_spec_studio_test', 'CONNECT')
       AND NOT has_database_privilege('ai_spec_studio_migrator', 'ai_spec_studio_test', 'CREATE')
       AND NOT has_database_privilege('ai_spec_studio_migrator', 'ai_spec_studio_test', 'TEMPORARY')) IS NOT TRUE THEN
-    failures := failures || 'CI_SETUP_FINAL_APP_MIGRATOR_PRIVILEGES';
+    failures := array_append(failures, 'CI_SETUP_FINAL_APP_MIGRATOR_PRIVILEGES'::text);
   END IF;
   IF (has_database_privilege('ai_spec_studio_test', 'ai_spec_studio_test', 'CONNECT')
       AND has_database_privilege('ai_spec_studio_test', 'ai_spec_studio_test', 'CREATE')
       AND NOT has_database_privilege('ai_spec_studio_test', 'ai_spec_studio_test', 'TEMPORARY')) IS NOT TRUE THEN
-    failures := failures || 'CI_SETUP_FINAL_TEST_PRIVILEGES';
+    failures := array_append(failures, 'CI_SETUP_FINAL_TEST_PRIVILEGES'::text);
   END IF;
   IF (SELECT rolpassword IS NULL FROM pg_authid WHERE oid = 10) IS NOT TRUE THEN
-    failures := failures || 'CI_SETUP_FINAL_ADMIN_PASSWORD';
+    failures := array_append(failures, 'CI_SETUP_FINAL_ADMIN_PASSWORD'::text);
   END IF;
 
   IF cardinality(failures) > 0 THEN

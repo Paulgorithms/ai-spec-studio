@@ -1230,7 +1230,7 @@ describe("the job leaves earlier phases alone", () => {
     "scripts/db/ci/postgresql-ci.conf":
       "79159a342b5dfd8563b3c9bffcebf672914e7f9d59ded1556f0fcfb50ac210ec",
     "scripts/db/ci-setup.sql":
-      "8170208b43651412a8d18d7da25eb64b51760fc357d4b01ff6f4d7593158f3f9",
+      "4109d4ff9d6874202d667ed6166ff5eb6360194a6818962a953603a66fe801c0",
     "scripts/db/ci-provision-postgres.sh":
       "2a752e94a09991b97e10252a5368e31469a2007c3d9b8c3714566652533761d0",
     "scripts/db/ci-verify-postgres.ts":

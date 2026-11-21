@@ -557,7 +557,9 @@ describe("ci-expect-refusals.sh: the refusal contracts match Phase 3", () => {
     const preflight =
       /DO \$preflight\$[\s\S]*?\$preflight\$;/.exec(setupSql)?.[0] ?? "";
     const order = [
-      ...preflight.matchAll(/failures := failures \|\| '(CI_SETUP_[A-Z_]+)'/g),
+      ...preflight.matchAll(
+        /failures := array_append\(failures, '(CI_SETUP_[A-Z_]+)'::text\);/g,
+      ),
     ].map((m) => m[1]);
     const expected = order.filter((code) =>
       FRESHNESS_CODES.includes(code ?? ""),

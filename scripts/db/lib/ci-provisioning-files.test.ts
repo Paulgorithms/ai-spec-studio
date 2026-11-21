@@ -621,11 +621,40 @@ function doBody(units: readonly SqlUnit[], tag: string): string {
   return unit.text;
 }
 
-// The CI_SETUP_* codes a block appends to `failures`, in order.
+// The CI_SETUP_* codes a block appends to `failures`, in order. Each is
+// appended as a text element with array_append. `failures || 'CODE'` would
+// not be: PostgreSQL takes the untyped literal for an array too, so the
+// first failing check raises "malformed array literal" instead of its code
+// (seen on the runner in the second live CI run; PostgreSQL 18 docs,
+// Arrays, Modifying Arrays).
 function failureCodes(body: string): string[] {
   return [
-    ...body.matchAll(/failures := failures \|\| '(CI_SETUP_[A-Z_]+)'/g),
+    ...body.matchAll(
+      /failures := array_append\(failures, '(CI_SETUP_[A-Z_]+)'::text\);/g,
+    ),
   ].map((m) => m[1] ?? "");
+}
+
+// Every assignment to `failures` in a block, as written.
+function failureAssignments(body: string): string[] {
+  return [...body.matchAll(/failures :=[^;]*;/g)].map((m) => m[0]);
+}
+
+// What makes a failure-code append ambiguous: any || at all (ci-setup.sql
+// has no other use for it), or an assignment to `failures` not in the one
+// approved form.
+function ambiguousAppends(text: string): string[] {
+  const found = [...text.matchAll(/[^\n]*\|\|[^\n]*/g)].map((m) => m[0]);
+  for (const assignment of failureAssignments(text)) {
+    if (
+      !/^failures := array_append\(failures, 'CI_SETUP_[A-Z_]+'::text\);$/.test(
+        assignment,
+      )
+    ) {
+      found.push(assignment);
+    }
+  }
+  return found;
 }
 
 const sql = read(SQL_PATH);
@@ -1370,6 +1399,91 @@ describe("ci-setup.sql: the SCRAM verifier", () => {
       "DO $check_ci_server$",
       "SELECT coalesce((SELECT rolpassword FROM",
     ]);
+  });
+});
+
+describe("ci-setup.sql: failure codes are appended as text elements", () => {
+  const BLOCKS: Array<[string, string[]]> = [
+    ["preflight", PREFLIGHT_CODES],
+    ["check_ci_test_database", TEST_DATABASE_CODES],
+    ["check_ci_server", FINAL_CODES],
+  ];
+
+  test("every assignment to failures is array_append(failures, '<code>'::text)", () => {
+    for (const [tag, codes] of BLOCKS) {
+      const body = doBody(units, tag);
+      expect(failureAssignments(body)).toEqual(
+        codes.map(
+          (code) => `failures := array_append(failures, '${code}'::text);`,
+        ),
+      );
+    }
+    expect(failureAssignments(sql)).toHaveLength(43);
+  });
+
+  test("no ambiguous text-array concatenation remains", () => {
+    expect(ambiguousAppends(sql)).toEqual([]);
+    expect(sql).not.toContain("||");
+  });
+
+  test.each([
+    [
+      "the old || form",
+      "failures := array_append(failures, 'CI_SETUP_PORT'::text);",
+      "failures := failures || 'CI_SETUP_PORT';",
+    ],
+    [
+      "an uncast literal",
+      "failures := array_append(failures, 'CI_SETUP_PORT'::text);",
+      "failures := array_append(failures, 'CI_SETUP_PORT');",
+    ],
+    [
+      "array_cat",
+      "failures := array_append(failures, 'CI_SETUP_PORT'::text);",
+      "failures := array_cat(failures, '{CI_SETUP_PORT}');",
+    ],
+    [
+      "|| elsewhere",
+      "array_to_string(failures, ', ')",
+      "array_to_string(failures || '{}', ', ')",
+    ],
+  ])("the check catches %s", (_name, from, to) => {
+    expect(sql).toContain(from);
+    expect(ambiguousAppends(sql.replace(from, to))).not.toEqual([]);
+  });
+
+  test("each block starts from an empty text[] and raises once, after every check", () => {
+    for (const [tag, codes] of BLOCKS) {
+      const body = doBody(units, tag);
+      expect(body).toContain("failures text[] := ARRAY[]::text[];");
+      expect(body.match(/\bRAISE\b/g)).toHaveLength(1);
+      expect(body).not.toMatch(/\b(RETURN|EXIT|CONTINUE)\b/);
+      // The single RAISE comes after the last code is recorded.
+      const last = codes.at(-1) ?? "";
+      expect(body.indexOf("RAISE")).toBeGreaterThan(body.lastIndexOf(last));
+      expect(body).toMatch(
+        /IF cardinality\(failures\) > 0 THEN RAISE EXCEPTION 'CI_SETUP_[A-Z_]+_FAILED: %', array_to_string\(failures, ', '\); END IF;/,
+      );
+    }
+  });
+
+  test("the preflight, which records the four freshness codes a repeated setup hits, runs before any change", () => {
+    const codes = failureCodes(doBody(units, "preflight"));
+    for (const code of [
+      "CI_SETUP_ROLES_NOT_FRESH",
+      "CI_SETUP_PROJECT_OBJECTS_EXIST",
+      "CI_SETUP_DATABASES_NOT_FRESH",
+      "CI_SETUP_SETTINGS_NOT_FRESH",
+    ]) {
+      expect(codes).toContain(code);
+    }
+    const preflightIndex = units.findIndex(
+      (u) => u.kind === "sql" && u.text.startsWith("DO $preflight$"),
+    );
+    const firstChange = units.findIndex(
+      (u) => u.kind === "sql" && MUTATION.test(u.text),
+    );
+    expect(firstChange).toBe(preflightIndex + 1);
   });
 });
 
