@@ -12,6 +12,10 @@ import {
   withRollback,
   type TestTransaction,
 } from "@/lib/db/testing";
+import {
+  DEVELOPMENT_DATABASE,
+  developmentDatabaseIsolationViolations,
+} from "@/lib/db/testing/development-database-isolation";
 import type { SpecStatus } from "@/lib/spec-status";
 import { APPROVED_MIGRATION } from "../../../scripts/db/lib/migration-checks";
 
@@ -524,13 +528,36 @@ describe("role and database isolation (read-only catalog checks)", () => {
   });
 
   test("the test role can't reach the development database", async () => {
+    // Locally it exists and is closed to the test role; in CI it must not
+    // exist. Which applies comes from the runner and the server together
+    // (developmentDatabaseIsolationViolations), never from whether it exists.
     await withRollback(async (tx) => {
+      const facts = await one(
+        tx,
+        sql`select current_setting('cluster_name') as cluster_name,
+          exists (select 1 from pg_database where datname = ${DEVELOPMENT_DATABASE}) as dev_exists`,
+      );
+      const developmentDatabaseExists = facts.dev_exists === true;
+      // has_database_privilege on a database that doesn't exist is an
+      // error (3D000), so it's read only when pg_database has the row.
+      const testRoleCanConnect = developmentDatabaseExists
+        ? (
+            await one(
+              tx,
+              sql`select has_database_privilege(current_user, ${DEVELOPMENT_DATABASE}::text, 'CONNECT') as dev_connect`,
+            )
+          ).dev_connect
+        : null;
+      expect(typeof facts.cluster_name).toBe("string");
+      expect(typeof facts.dev_exists).toBe("boolean");
       expect(
-        await one(
-          tx,
-          sql`select has_database_privilege(current_user, 'ai_spec_studio_dev', 'CONNECT') as dev_connect`,
-        ),
-      ).toEqual({ dev_connect: false });
+        developmentDatabaseIsolationViolations(process.env, {
+          clusterName: String(facts.cluster_name),
+          developmentDatabaseExists,
+          testRoleCanConnect:
+            typeof testRoleCanConnect === "boolean" ? testRoleCanConnect : null,
+        }),
+      ).toEqual([]);
     });
   });
 
