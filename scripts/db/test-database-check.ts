@@ -3,16 +3,17 @@
 //
 //   ./node_modules/.bin/tsx scripts/db/test-database-check.ts pre
 //
-// Loads .env.local with Node's process.loadEnvFile() (a variable already set
-// in the shell wins), connects once as TEST_DATABASE_URL
-// (ai_spec_studio_test only), and prints fixed PASS/FAIL labels with codes,
-// ending with the database's state: fresh, the approved migration applied,
-// or unexpected. Never prints URLs, passwords, or driver messages, and never
-// writes to the database or takes the advisory lock.
+// Loads .env.local when it exists (lib/local-env.ts: a variable already set
+// in the shell wins; no file means the shell must set everything), connects
+// once as TEST_DATABASE_URL (ai_spec_studio_test only), and prints fixed
+// PASS/FAIL labels with codes, ending with the database's state: fresh, the
+// approved migration applied, or unexpected. Never prints URLs, passwords, or
+// driver messages, and never writes to the database or takes the advisory
+// lock.
 // Exit code: 0 when every check passes, 1 when any fails, 2 for bad usage.
-import { loadEnvFile } from "node:process";
 import { Pool } from "pg";
 import { errorKind, formatResults } from "./lib/live-verification";
+import { loadLocalEnv } from "./lib/local-env";
 import { readMigrationFiles } from "./lib/migration-files";
 import type { MigrationFiles } from "./lib/migration-checks";
 import { runTestDatabasePreflight } from "./lib/test-database-target";
@@ -31,10 +32,9 @@ async function main(): Promise<number> {
     );
     return 1;
   }
-  try {
-    loadEnvFile(".env.local");
-  } catch (error) {
-    console.log(`FAIL  could not load .env.local (${errorKind(error)})`);
+  const localEnv = loadLocalEnv();
+  if (!localEnv.ok) {
+    console.log(`FAIL  could not load .env.local (${localEnv.reason})`);
     return 1;
   }
   const { results, state } = await runTestDatabasePreflight(
