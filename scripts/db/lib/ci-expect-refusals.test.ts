@@ -3,7 +3,10 @@
 // synthetic outputs, the provision capture runs against a stub script in a
 // temporary directory, and whole-script runs use environments that stop at
 // the first gates, before sudo, psql, or the real provisioning script.
-import { spawnSync } from "node:child_process";
+import {
+  spawnSync,
+  type SpawnSyncOptionsWithStringEncoding,
+} from "node:child_process";
 import {
   chmodSync,
   existsSync,
@@ -30,6 +33,23 @@ const SQL_PATH = "scripts/db/ci-setup.sql";
 const script = readFileSync(SCRIPT_PATH, "utf8");
 const provisionScript = readFileSync(PROVISION_PATH, "utf8");
 const setupSql = readFileSync(SQL_PATH, "utf8");
+
+// Every bash -c run here gets its standard input from /dev/null. Node's
+// default stdin pipe is a socket on Linux, and Debian's Bash, started with
+// -c on a socket and with no SHLVL, takes itself for a remote shell and
+// reads /etc/bash.bashrc and ~/.bashrc first. The workflow runs the scripts
+// as bash -p <script>, which never does that.
+const BASH_C_OPTIONS: SpawnSyncOptionsWithStringEncoding = {
+  encoding: "utf8",
+  stdio: ["ignore", "pipe", "pipe"],
+  env: { NODE_ENV: "test", PATH: "/usr/bin:/bin" },
+};
+
+// The one line that names sudo without running it: the constant that
+// sql_line_kind compares an output line's prefix with. The checks that sudo
+// is run only in the approved places, and only with -n, allow exactly this
+// line.
+const SUDO_KIND_LINE = 'readonly SQL_SUDO_PREFIX="sudo:"';
 
 const SECRET = "FakeSecret:p@ss/word";
 const FAKE_URL = `postgresql://ai_spec_studio_test:${"0123456789abcdef".repeat(4)}@127.0.0.1:5432/ai_spec_studio_test`;
@@ -89,8 +109,13 @@ function classify(
     'VERDICT=""',
     'OBSERVED=""',
     'STATUS=""',
+    'SQL_UNRECOGNIZED=""',
+    'SQL_ERROR_LINE=""',
+    'SQL_MARKER=""',
+    'LINE_KIND=""',
     functionText(text, "fail"),
     functionText(text, "pass"),
+    functionText(text, "sql_line_kind"),
     functionText(text, `classify_${mode}`),
     functionText(text, "report_verdict"),
     'STATUS="$2"',
@@ -100,7 +125,7 @@ function classify(
   const result = spawnSync(
     "bash",
     ["-p", "-c", program, "classify", mode, String(status), output],
-    { encoding: "utf8", env: { NODE_ENV: "test", PATH: "/usr/bin:/bin" } },
+    BASH_C_OPTIONS,
   );
   return {
     stdout: result.stdout,
@@ -477,6 +502,7 @@ describe("ci-expect-refusals.sh: the file", () => {
         "report_verdict",
         "run_provision_refusal",
         "run_sql_refusal",
+        "sql_line_kind",
       ].sort(),
     );
   });
@@ -605,23 +631,425 @@ describe("classify_sql", () => {
       3,
       "psql:<stdin>:172: ERROR:  CI_SETUP_PREFLIGHT_FAILED: roles; DROP TABLE x",
     );
-    expect(stdout).toBe("FAIL  CI_REFUSAL_WRONG_ERROR\n      exit status: 3\n");
+    expect(stdout).toBe(
+      [
+        "FAIL  CI_REFUSAL_WRONG_ERROR",
+        "      exit status: 3",
+        "      unrecognized: none",
+        "      error input line: 172",
+        "      preflight marker: present",
+        "",
+      ].join("\n"),
+    );
+  });
+});
+
+describe("classify_sql: diagnostics without captured text", () => {
+  const KINDS = [
+    "ERROR_OTHER_PREFIX",
+    "ERROR_NO_PREFIX",
+    "PSQL_CLIENT_ERROR",
+    "SERVER_WARNING",
+    "SERVER_NOTICE",
+    "DETAIL",
+    "HINT",
+    "LINE",
+    "QUERY",
+    "STATEMENT",
+    "SUDO",
+    "PSQL_OTHER",
+    "OTHER",
+  ];
+  const KIND = `(?:${KINDS.join("|")})`;
+  const ALLOWED_LINE = new RegExp(
+    [
+      "^FAIL {2}CI_REFUSAL_[A-Z_]+$",
+      "^ {6}exit status: [0-9]+$",
+      "^ {6}observed: CI_SETUP_[A-Z_]+(, CI_SETUP_[A-Z_]+)*$",
+      `^ {6}unrecognized: (none|${KIND} x[0-9]{1,2}\\+?(, ${KIND} x[0-9]{1,2}\\+?)*)$`,
+      "^ {6}error input line: [1-9][0-9]{0,8}$",
+      "^ {6}preflight marker: (present|absent)$",
+    ].join("|"),
+  );
+  const FAKE_PASSWORD = "hunter2-Pa55word";
+
+  // Every printed line has one of the fixed forms: codes, labels, digits.
+  function expectOnlyPermitted(stdout: string) {
+    expect(stdout.endsWith("\n")).toBe(true);
+    for (const line of stdout.slice(0, -1).split("\n")) {
+      expect(line).toMatch(ALLOWED_LINE);
+    }
+    for (const leaked of [
+      SECRET,
+      FAKE_PASSWORD,
+      "postgresql://",
+      "SCRAM-SHA-256",
+      "AAAAAAAA",
+      "<stdin>",
+      "/tmp/",
+      "/var/",
+      "SELECT",
+      "ai_spec_studio",
+      "postgres",
+      "runner",
+    ]) {
+      expect(stdout).not.toContain(leaked);
+    }
+  }
+
+  const field = (stdout: string, name: string) =>
+    stdout
+      .split("\n")
+      .find((l) => l.startsWith(`      ${name}: `))
+      ?.slice(`      ${name}: `.length);
+
+  const KIND_CASES: Array<[string, string]> = [
+    [
+      "ERROR_OTHER_PREFIX",
+      `psql:/tmp/ci-setup.sql:217: ERROR:  CI_SETUP_PREFLIGHT_FAILED: ${FRESHNESS_CODES.join(", ")}`,
+    ],
+    [
+      "ERROR_OTHER_PREFIX",
+      `psql:<stdin>:217: ERROR: CI_SETUP_PREFLIGHT_FAILED: ${FRESHNESS_CODES.join(", ")}`,
+    ],
+    ["ERROR_OTHER_PREFIX", `psql:<stdin>:3: FATAL:  role "${SECRET}" denied`],
+    [
+      "ERROR_OTHER_PREFIX",
+      "psql: ERROR:  CI_SETUP_PREFLIGHT_FAILED: CI_SETUP_ROLES_NOT_FRESH",
+    ],
+    [
+      "ERROR_NO_PREFIX",
+      `ERROR:  CI_SETUP_PREFLIGHT_FAILED: ${FRESHNESS_CODES.join(", ")}`,
+    ],
+    ["ERROR_NO_PREFIX", `FATAL:  password authentication failed ${SECRET}`],
+    [
+      "PSQL_CLIENT_ERROR",
+      'psql:<stdin>:55: error: unrecognized value "x" for "\\if expression": Boolean expected',
+    ],
+    [
+      "PSQL_CLIENT_ERROR",
+      `psql: error: connection to server at "127.0.0.1" failed: ${FAKE_URL}`,
+    ],
+    ["SERVER_WARNING", `WARNING:  ${FAKE_PASSWORD} is weak`],
+    ["SERVER_WARNING", "psql:<stdin>:9: WARNING:  there is no transaction"],
+    ["SERVER_NOTICE", `NOTICE:  role ${SECRET} exists`],
+    ["SERVER_NOTICE", "INFO:  something"],
+    ["SERVER_NOTICE", "LOG:  something"],
+    ["SERVER_NOTICE", "DEBUG1:  something"],
+    ["DETAIL", `DETAIL:  Key (rolname)=(${SECRET}) already exists.`],
+    ["HINT", `HINT:  Use ${FAKE_URL}`],
+    ["LINE", `LINE 1: ...ROLE x PASSWORD 'SCRAM-SHA-256$4096:AAAAAAAA...'`],
+    ["QUERY", `QUERY:  SELECT '${FAKE_PASSWORD}'`],
+    ["STATEMENT", `STATEMENT:  SELECT '${FAKE_PASSWORD}'`],
+    [
+      "SUDO",
+      "sudo: unable to resolve host runner-1: Name or service not known",
+    ],
+    ["PSQL_OTHER", `psql:<stdin>:9: ${SECRET}`],
+    ["PSQL_OTHER", "psql: warning: extra command-line argument ignored"],
+    ["PSQL_OTHER", "psql:/var/x:y.sql:12: ERROR:  colon in the file name"],
+    ["PSQL_OTHER", "psql:/tmp/x.sql:0217: ERROR:  a leading zero"],
+    ["PSQL_OTHER", "psql:/tmp/x.sql:1234567890: ERROR:  ten digits"],
+    ["PSQL_OTHER", "psql:<stdin>:12x: ERROR:  not digits"],
+    ["OTHER", `${SECRET} ${FAKE_URL}`],
+    ["OTHER", `error: ${FAKE_PASSWORD}`],
+    ["OTHER", `\u0001\u001b[31m${FAKE_PASSWORD}\u001b[0m\t`],
+    ["OTHER", " ERROR:  indented"],
+  ];
+
+  test.each(KIND_CASES)("%s: %s", (kind, line) => {
+    const { stdout, status } = classify("sql", 3, line);
+    expect(status).toBe(1);
+    expect(verdictOf(stdout)).toBe("CI_REFUSAL_UNRECOGNIZED_OUTPUT");
+    expect(field(stdout, "unrecognized")).toBe(`${kind} x1`);
+    expectOnlyPermitted(stdout);
+  });
+
+  test("every label is produced by some case", () => {
+    expect([...new Set(KIND_CASES.map(([kind]) => kind))].sort()).toEqual(
+      [...KINDS].sort(),
+    );
+  });
+
+  test("the labels in the script are exactly the approved ones, in order", () => {
+    expect(readonlyLines(script)).toContain(
+      `readonly SQL_KINDS="${KINDS.join(" ")}"`,
+    );
+  });
+
+  test("several unrecognized lines: each label counted, in a fixed order", () => {
+    const output = [
+      `HINT:  ${SECRET}`,
+      "WARNING:  one",
+      SQL_EXPECTED,
+      "WARNING:  two",
+      `DETAIL:  ${FAKE_URL}`,
+      FAKE_PASSWORD,
+    ].join("\n");
+    const { stdout } = classify("sql", 3, output);
+    expect(stdout).toBe(
+      [
+        "FAIL  CI_REFUSAL_UNRECOGNIZED_OUTPUT",
+        "      exit status: 3",
+        `      observed: ${FRESHNESS_CODES.join(", ")}`,
+        "      unrecognized: SERVER_WARNING x2, DETAIL x1, HINT x1, OTHER x1",
+        "      error input line: 172",
+        "      preflight marker: present",
+        "",
+      ].join("\n"),
+    );
+    expectOnlyPermitted(stdout);
+  });
+
+  test("counts are bounded at 99", () => {
+    const output = Array.from(
+      { length: 150 },
+      (_, i) => `${FAKE_PASSWORD}${i}`,
+    ).join("\n");
+    const { stdout } = classify("sql", 3, output);
+    expect(field(stdout, "unrecognized")).toBe("OTHER x99+");
+    expectOnlyPermitted(stdout);
+  });
+
+  test("an extra server warning beside the expected refusal still fails", () => {
+    const { stdout, status } = classify(
+      "sql",
+      3,
+      `${SQL_EXPECTED}\npsql:<stdin>:173: WARNING:  ${SECRET}`,
+    );
+    expect(status).toBe(1);
+    expect(verdictOf(stdout)).toBe("CI_REFUSAL_UNRECOGNIZED_OUTPUT");
+    expect(field(stdout, "observed")).toBe(FRESHNESS_CODES.join(", "));
+    expect(field(stdout, "unrecognized")).toBe("SERVER_WARNING x1");
+    expect(field(stdout, "error input line")).toBe("172");
+    expectOnlyPermitted(stdout);
+  });
+
+  test("a lowercase psql client error fails, with its input line", () => {
+    const { stdout, status } = classify(
+      "sql",
+      3,
+      'psql:<stdin>:57: error: unrecognized value ":ci_verifier_ok" for "\\if expression": Boolean expected',
+    );
+    expect(status).toBe(1);
+    expect(stdout).toBe(
+      [
+        "FAIL  CI_REFUSAL_UNRECOGNIZED_OUTPUT",
+        "      exit status: 3",
+        "      unrecognized: PSQL_CLIENT_ERROR x1",
+        "      error input line: 57",
+        "      preflight marker: absent",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("an unexpected SQL error fails, with its input line and no marker", () => {
+    const { stdout } = classify(
+      "sql",
+      3,
+      `psql:<stdin>:90: ERROR:  syntax error at or near "${SECRET}"\nLINE 1: ${FAKE_URL}`,
+    );
+    expect(stdout).toBe(
+      [
+        "FAIL  CI_REFUSAL_UNRECOGNIZED_OUTPUT",
+        "      exit status: 3",
+        "      unrecognized: LINE x1",
+        "      error input line: 90",
+        "      preflight marker: absent",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("the expected error in another prefix form: marker present, line known, not accepted", () => {
+    const { stdout, status } = classify(
+      "sql",
+      3,
+      `psql:/tmp/ci-setup.sql:217: ERROR:  CI_SETUP_PREFLIGHT_FAILED: ${FRESHNESS_CODES.join(", ")}\n${CONTEXT}`,
+    );
+    expect(status).toBe(1);
+    expect(stdout).toBe(
+      [
+        "FAIL  CI_REFUSAL_UNRECOGNIZED_OUTPUT",
+        "      exit status: 3",
+        "      unrecognized: ERROR_OTHER_PREFIX x1",
+        "      error input line: 217",
+        "      preflight marker: present",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("the input line is the first error's, and only from a strict psql prefix", () => {
+    const first = (output: string) =>
+      field(classify("sql", 3, output).stdout, "error input line");
+    expect(
+      first(
+        "psql:<stdin>:12: WARNING:  w\npsql:<stdin>:55: error: e\npsql:<stdin>:90: ERROR:  x",
+      ),
+    ).toBe("55");
+    expect(first("psql:<stdin>:12: WARNING:  only a warning")).toBeUndefined();
+    expect(first("ERROR:  failed at line 42")).toBeUndefined();
+    expect(first("psql:<stdin>:0217: ERROR:  x")).toBeUndefined();
+    expect(first("psql:<stdin>:1234567890: ERROR:  x")).toBeUndefined();
+    expect(first("psql:<stdin>:-5: ERROR:  x")).toBeUndefined();
+    expect(first("psql:<stdin>:5 : ERROR:  x")).toBeUndefined();
+    expect(first("xpsql:<stdin>:5: ERROR:  x")).toBeUndefined();
+    expect(first("psql:<stdin>:123456789: ERROR:  x")).toBe("123456789");
+  });
+
+  test("an accepted error line with a malformed line number is still classified, but no line is reported", () => {
+    const { stdout } = classify(
+      "sql",
+      3,
+      `psql:<stdin>:0172: ERROR:  CI_SETUP_PREFLIGHT_FAILED: ${FRESHNESS_CODES.join(", ")}`,
+    );
+    expect(stdout).toBe("PASS  CI_REFUSAL_SQL_EXPECTED\n");
+    const wrong = classify("sql", 3, "psql:<stdin>:0090: ERROR:  x").stdout;
+    expect(verdictOf(wrong)).toBe("CI_REFUSAL_WRONG_ERROR");
+    expect(field(wrong, "error input line")).toBeUndefined();
+  });
+
+  test("unknown output with no psql line: labels and the marker still say what it was", () => {
+    const { stdout } = classify("sql", 3, `${SECRET}\n${FAKE_URL}`);
+    expect(stdout).toBe(
+      [
+        "FAIL  CI_REFUSAL_UNRECOGNIZED_OUTPUT",
+        "      exit status: 3",
+        "      unrecognized: OTHER x2",
+        "      preflight marker: absent",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("the marker counts wherever it appears, but never makes an output acceptable", () => {
+    const { stdout } = classify(
+      "sql",
+      3,
+      `${SECRET} CI_SETUP_PREFLIGHT_FAILED: ${FRESHNESS_CODES.join(", ")}`,
+    );
+    expect(verdictOf(stdout)).toBe("CI_REFUSAL_UNRECOGNIZED_OUTPUT");
+    expect(field(stdout, "preflight marker")).toBe("present");
+    expect(field(stdout, "observed")).toBeUndefined();
+    expectOnlyPermitted(stdout);
+  });
+
+  test("a failing status with no output reports no line and an absent marker", () => {
+    const { stdout } = classify("sql", 3, "");
+    expect(stdout).toBe(
+      [
+        "FAIL  CI_REFUSAL_MISSING_CODE",
+        "      exit status: 3",
+        "      unrecognized: none",
+        "      preflight marker: absent",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("a carriage return in the expected error line fails closed", () => {
+    const { stdout } = classify(
+      "sql",
+      3,
+      `${sqlError(FRESHNESS_CODES)}\r\n${CONTEXT}`,
+    );
+    expect(verdictOf(stdout)).toBe("CI_REFUSAL_WRONG_ERROR");
+    expect(field(stdout, "observed")).toBeUndefined();
+    expectOnlyPermitted(stdout);
+  });
+
+  test("every existing SQL case still prints only permitted lines", () => {
+    for (const [, status, output] of SQL_CASES) {
+      const { stdout } = classify(
+        "sql",
+        status,
+        `${output}\n${SECRET} ${FAKE_PASSWORD} ${FAKE_URL}`,
+      );
+      expectOnlyPermitted(stdout);
+    }
+  });
+
+  describe("oversized output is not classified", () => {
+    const BYTE_LIMIT = 16384;
+    const LINE_LIMIT = 256;
+    const padded = (bytes: number) => {
+      const head = `${SQL_EXPECTED}\nCONTEXT:  `;
+      return `${head}${"x".repeat(bytes - head.length)}`;
+    };
+
+    test("at the byte limit, the expected refusal still passes", () => {
+      const output = padded(BYTE_LIMIT);
+      expect(output.length).toBe(BYTE_LIMIT);
+      expect(classify("sql", 3, output).stdout).toBe(
+        "PASS  CI_REFUSAL_SQL_EXPECTED\n",
+      );
+    });
+
+    test("one byte over, even the expected refusal fails", () => {
+      const { stdout, status } = classify("sql", 3, padded(BYTE_LIMIT + 1));
+      expect(status).toBe(1);
+      expect(stdout).toBe(
+        "FAIL  CI_REFUSAL_OUTPUT_TOO_LARGE\n      exit status: 3\n",
+      );
+    });
+
+    test("at the line limit, the expected refusal still passes", () => {
+      // classify_sql counts the lines of the output plus a final newline.
+      const output = [SQL_EXPECTED, ...Array(LINE_LIMIT - 2).fill("")].join(
+        "\n",
+      );
+      expect(`${output}\n`.split("\n").length - 1).toBe(LINE_LIMIT);
+      expect(classify("sql", 3, output).stdout).toBe(
+        "PASS  CI_REFUSAL_SQL_EXPECTED\n",
+      );
+    });
+
+    test("one line over, even the expected refusal fails", () => {
+      const output = [SQL_EXPECTED, ...Array(LINE_LIMIT - 1).fill("")].join(
+        "\n",
+      );
+      expect(classify("sql", 3, output).stdout).toBe(
+        "FAIL  CI_REFUSAL_OUTPUT_TOO_LARGE\n      exit status: 3\n",
+      );
+    });
+
+    test("a large output full of secrets prints none of them", () => {
+      const output = `${SQL_EXPECTED}\n${`${SECRET} ${FAKE_URL}\n`.repeat(400)}`;
+      expect(output.length).toBeGreaterThan(BYTE_LIMIT);
+      const { stdout } = classify("sql", 3, output);
+      expect(stdout).toBe(
+        "FAIL  CI_REFUSAL_OUTPUT_TOO_LARGE\n      exit status: 3\n",
+      );
+    });
+  });
+
+  test("provision mode prints none of the SQL diagnostics", () => {
+    for (const [, status, output] of PROVISION_CASES) {
+      const { stdout } = classify("provision", status, output);
+      expect(stdout).not.toMatch(
+        /unrecognized:|error input line:|preflight marker:/,
+      );
+    }
   });
 });
 
 describe("the classifiers use Bash builtins only", () => {
-  test.each(["classify_provision", "classify_sql", "report_verdict"])(
-    "%s runs no external command",
-    (name) => {
-      const body = functionText(script, name);
-      expect(body).not.toMatch(
-        /\b(sudo|psql|cat|grep|sed|awk|dd|stat|tr|cut|head|tail|wc|sort|printf\s+-v|echo|env|bash)\b(?!\s*\))/,
-      );
-      expect(body.match(/\bprintf\b/g)?.length ?? 0).toBe(
-        body.match(/\bbuiltin printf\b/g)?.length ?? 0,
-      );
-    },
-  );
+  test.each([
+    "classify_provision",
+    "classify_sql",
+    "sql_line_kind",
+    "report_verdict",
+  ])("%s runs no external command", (name) => {
+    const body = functionText(script, name);
+    expect(body).not.toMatch(
+      /\b(sudo|psql|cat|grep|sed|awk|dd|stat|tr|cut|head|tail|wc|sort|printf\s+-v|echo|env|bash)\b(?!\s*\))/,
+    );
+    expect(body.match(/\bprintf\b/g)?.length ?? 0).toBe(
+      body.match(/\bbuiltin printf\b/g)?.length ?? 0,
+    );
+  });
 });
 
 describe("run_provision_refusal against a stub (never the real script)", () => {
@@ -647,6 +1075,9 @@ describe("run_provision_refusal against a stub (never the real script)", () => {
       'VERDICT=""',
       'OBSERVED=""',
       'STATUS=""',
+      'SQL_UNRECOGNIZED=""',
+      'SQL_ERROR_LINE=""',
+      'SQL_MARKER=""',
       `PROVISION_SCRIPT='${stub}'`,
       functionText(text, "fail"),
       functionText(text, "pass"),
@@ -655,10 +1086,7 @@ describe("run_provision_refusal against a stub (never the real script)", () => {
       functionText(text, "run_provision_refusal"),
       "run_provision_refusal",
     ].join("\n");
-    return spawnSync("bash", ["-p", "-c", program], {
-      encoding: "utf8",
-      env: { NODE_ENV: "test", PATH: "/usr/bin:/bin" },
-    });
+    return spawnSync("bash", ["-p", "-c", program], BASH_C_OPTIONS);
   }
 
   const emit = (lines: string[], status: number) =>
@@ -670,7 +1098,37 @@ describe("run_provision_refusal against a stub (never the real script)", () => {
     expect(result.status).toBe(0);
   });
 
-  test("without trap - ERR, the same refusal would be misread", () => {
+  // Whether this Bash runs an inherited ERR trap inside a command
+  // substitution, and so captures the trap's text, when the substitution
+  // is an if condition (as in run_provision_refusal) or, as a control, a
+  // plain statement. Run the same way as runAgainstStub: bash -p -c, strict
+  // mode, errtrace. Bash 3.2 (macOS) runs it in both; Bash 5 (Ubuntu) only
+  // in the plain statement, because an if condition ignores failures inside
+  // the substitution too.
+  function errTrapCaptured(context: "if-condition" | "statement") {
+    const capture =
+      context === "if-condition"
+        ? 'if out="$( /bin/bash -p -c "exit 1" )"; then :; fi'
+        : 'out="$( /bin/bash -p -c "exit 1"; true )"';
+    const program = [
+      "set -euo pipefail",
+      "set -o errtrace",
+      `trap 'builtin printf "%s\\n" TRAPPED' ERR`,
+      'out=""',
+      capture,
+      'builtin printf "[%s]" "$out"',
+    ].join("\n");
+    const result = spawnSync("bash", ["-p", "-c", program], BASH_C_OPTIONS);
+    expect(result.status).toBe(0);
+    expect(["[TRAPPED]", "[]"]).toContain(result.stdout);
+    return result.stdout === "[TRAPPED]";
+  }
+
+  test("the ERR-trap probe detects a captured trap (control: a plain capture)", () => {
+    expect(errTrapCaptured("statement")).toBe(true);
+  });
+
+  test("without trap - ERR, the refusal is misread wherever this Bash captures the trap, and read correctly where it doesn't", () => {
     const mutated = script.replace(
       '    trap - ERR\n    /bin/bash -p "$PROVISION_SCRIPT" 2>&1',
       '    /bin/bash -p "$PROVISION_SCRIPT" 2>&1',
@@ -680,7 +1138,33 @@ describe("run_provision_refusal against a stub (never the real script)", () => {
       emit(PROVISION_EXPECTED.split("\n"), 1),
       mutated,
     );
-    expect(result.stdout).toMatch(/^FAIL {2}CI_REFUSAL_/);
+    if (errTrapCaptured("if-condition")) {
+      expect(result.stdout).toMatch(
+        /^FAIL {2}CI_REFUSAL_UNRECOGNIZED_OUTPUT\n/,
+      );
+      expect(result.status).toBe(1);
+    } else {
+      expect(result.stdout).toBe("PASS  CI_REFUSAL_PROVISION_EXPECTED\n");
+      expect(result.status).toBe(0);
+    }
+  });
+
+  test("if the ERR trap's text is captured (as Bash 3.2 does), the refusal is misread: what trap - ERR prevents", () => {
+    // The other probe outcome, on every Bash: the stub prints exactly what
+    // a captured trap adds to the output.
+    const result = runAgainstStub(
+      `builtin printf '%s\\n' 'FAIL  CI_REFUSAL_UNEXPECTED_ERROR (line 3)'\n${emit(PROVISION_EXPECTED.split("\n"), 1)}`,
+    );
+    expect(result.stdout.split("\n")[0]).toBe(
+      "FAIL  CI_REFUSAL_UNRECOGNIZED_OUTPUT",
+    );
+    expect(result.status).toBe(1);
+  });
+
+  test("with trap - ERR, the refusal is read correctly whatever this Bash does", () => {
+    errTrapCaptured("if-condition");
+    const result = runAgainstStub(emit(PROVISION_EXPECTED.split("\n"), 1));
+    expect(result.stdout).toBe("PASS  CI_REFUSAL_PROVISION_EXPECTED\n");
   });
 
   test("a stub that succeeds is caught", () => {
@@ -828,7 +1312,10 @@ describe("ci-expect-refusals.sh: no database access before every gate", () => {
   });
 
   test("sudo, psql, and the provisioning script appear only in the approved places", () => {
+    expect(script.split("sudo:").length).toBe(2);
+    expect(lines).toContain(SUDO_KIND_LINE);
     const sudoLines = lines
+      .filter((l) => l !== SUDO_KIND_LINE)
       .filter((l) => /\bsudo\b/.test(l))
       .map((l) => l.trim());
     expect(sudoLines).toEqual([
@@ -1021,7 +1508,9 @@ function violations(text: string): string[] {
   );
   flag(
     "SUDO_NONINTERACTIVE",
-    lines.filter((l) => /\bsudo\b/.test(l)).every((l) => /\bsudo -n\b/.test(l)),
+    lines
+      .filter((l) => /\bsudo\b/.test(l))
+      .every((l) => /\bsudo -n\b/.test(l) || l === SUDO_KIND_LINE),
   );
   return [...found].sort();
 }

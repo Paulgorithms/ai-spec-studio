@@ -2033,6 +2033,11 @@ describe("ci-provision-postgres.sh: the shell gates", () => {
     const end = script.indexOf("check_runner() {");
     return `${script.slice(0, end)}\ncheck_shell "$@"\n`;
   };
+  // Standard input is /dev/null. Node's default stdin pipe is a socket on
+  // Linux, and Debian's Bash, started with -c on a socket and with no
+  // SHLVL, takes itself for a remote shell and reads /etc/bash.bashrc and
+  // ~/.bashrc before the first line (traced under -x). The workflow runs
+  // the script as bash -p <script>, never with -c, which never does that.
   const prelude = (
     env: Record<string, string>,
     options: {
@@ -2053,6 +2058,7 @@ describe("ci-provision-postgres.sh: the shell gates", () => {
       ],
       {
         encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
         env: { NODE_ENV: "test", PATH: "/usr/bin:/bin", ...env },
       },
     );
@@ -2099,6 +2105,46 @@ describe("ci-provision-postgres.sh: the shell gates", () => {
     const result = prelude({}, { extraFlags: ["-x"] });
     expect(result.stderr.trim().split("\n")).toEqual(["+ set +x"]);
     expect(result.stdout).toBe("PASS  CI_PROVISION_SHELL\n");
+  });
+
+  test("no startup file runs before the script, here or in the workflow's form (bash -p <script>)", () => {
+    // A ~/.bashrc that leaves a marker, as the runner's would run first.
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "ci-provision-rc-")));
+    try {
+      const marker = `${home}/bashrc-ran`;
+      writeFileSync(`${home}/.bashrc`, `: > '${marker}'\n`);
+      const harness = prelude({ HOME: home }, { extraFlags: ["-x"] });
+      expect(harness.stderr.trim().split("\n")).toEqual(["+ set +x"]);
+      expect(harness.stdout).toBe("PASS  CI_PROVISION_SHELL\n");
+      const copy = `${home}/ci-provision-postgres.sh`;
+      writeFileSync(copy, head());
+      const asWorkflow = spawnSync("bash", ["-p", "-x", copy], {
+        encoding: "utf8",
+        env: { NODE_ENV: "test", PATH: "/usr/bin:/bin", HOME: home },
+      });
+      expect(asWorkflow.stderr.trim().split("\n")).toEqual(["+ set +x"]);
+      expect(asWorkflow.stdout).toBe("PASS  CI_PROVISION_SHELL\n");
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("the workflow runs the script as bash -p <script>, never with -c", () => {
+    // The startup-file behavior the prelude avoids needs -c, so it can't
+    // happen in the workflow as long as this holds.
+    const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
+    const runs = workflow
+      .split("\n")
+      .filter((l) => /ci-provision-postgres\.sh|ci-expect-refusals\.sh/.test(l))
+      .map((l) => l.trim());
+    expect(runs).toEqual([
+      "run: bash -p scripts/db/ci-provision-postgres.sh",
+      "run: bash -p scripts/db/ci-expect-refusals.sh provision",
+      "run: bash -p scripts/db/ci-expect-refusals.sh sql",
+    ]);
+    expect(workflow).not.toMatch(/\bbash\b[^\n]*\s-[a-zA-Z]*c\b/);
+    expect(workflow).not.toMatch(/\bsh -c\b/);
   });
 });
 

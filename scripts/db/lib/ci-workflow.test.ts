@@ -1238,7 +1238,7 @@ describe("the job leaves earlier phases alone", () => {
     "scripts/db/lib/ci-postgres-probes.ts":
       "817fe37d25407893045e42a79a20ba3d2bcd8b8b3788687c8242a60b71c3dfcb",
     "scripts/db/ci-expect-refusals.sh":
-      "46203cea26640d82b33e3206950c7a43f324dfda35b97f7f52c89f6ebcf3a465",
+      "afc66280fbaef288c708c8f2b462f8aa78931ae934bfbc47de17461800e99057",
   };
 
   test.each(Object.entries(REVIEWED))(

@@ -30,8 +30,15 @@
 # Output: fixed PASS/FAIL lines with CI_REFUSAL_* codes. On a mismatch it
 # adds the exit status and the refusal codes it saw, and only those that
 # are well-formed CI_PROVISION_* or CI_SETUP_* tokens: never captured text,
-# a URL, or a credential. It changes nothing: no file, configuration, role,
-# or database is created, altered, or removed.
+# a URL, or a credential. A failed sql run also reports, without any of
+# the lines' text: the kind of each line it didn't accept, as a fixed label
+# with a count; the psql input line of the first error, digits only, when a
+# line starts with a well-formed psql:<file>:<line>: prefix (the input is
+# two \set lines, then ci-setup.sql, so input line N is the file's line
+# N - 2); and whether the fixed marker CI_SETUP_PREFLIGHT_FAILED: appeared
+# at all. Output over 16384 bytes or 256 lines isn't classified. It changes
+# nothing: no file, configuration, role, or database is created, altered,
+# or removed.
 
 set +x
 case "$-" in
@@ -71,6 +78,15 @@ readonly PLACEHOLDER_VERIFIER='SCRAM-SHA-256$4096:AAAAAAAAAAAAAAAAAAAAAA==$AAAAA
 readonly SQL_ERROR_PATTERN='^psql:<stdin>:[0-9]+: ERROR:  (.*)$'
 readonly SQL_CODES_PATTERN='^CI_SETUP_[A-Z_]+(, CI_SETUP_[A-Z_]+)*$'
 readonly PROVISION_CODE_PATTERN='^CI_PROVISION_[A-Z_]+$'
+readonly SQL_PSQL_PREFIX="psql:"
+readonly SQL_SUDO_PREFIX="sudo:"
+readonly SQL_LOCATED_PATTERN='^psql:[^:]+:([1-9][0-9]{0,8}): (.*)$'
+readonly SQL_LINE_NUMBER_PATTERN='^[1-9][0-9]{0,8}$'
+readonly SQL_KINDS="ERROR_OTHER_PREFIX ERROR_NO_PREFIX PSQL_CLIENT_ERROR SERVER_WARNING SERVER_NOTICE DETAIL HINT LINE QUERY STATEMENT SUDO PSQL_OTHER OTHER"
+readonly SQL_KINDS_REPORT_PATTERN='^(none|[A-Z_]+ x[0-9]{1,2}\+?(, [A-Z_]+ x[0-9]{1,2}\+?)*)$'
+readonly SQL_OUTPUT_BYTE_LIMIT=16384
+readonly SQL_OUTPUT_LINE_LIMIT=256
+readonly SQL_KIND_COUNT_LIMIT=99
 
 MODE=""
 USER_ID=""
@@ -80,6 +96,10 @@ SQL_FILE=""
 VERDICT=""
 OBSERVED=""
 STATUS=""
+SQL_UNRECOGNIZED=""
+SQL_ERROR_LINE=""
+SQL_MARKER=""
+LINE_KIND=""
 
 fail() {
   builtin printf 'FAIL  %s\n' "$1"
@@ -141,15 +161,83 @@ classify_provision() {
   fi
 }
 
+# The kind of an output line classify_sql doesn't accept, as one fixed
+# label in LINE_KIND. Only the line's leading form is looked at; none of
+# its text is kept.
+sql_line_kind() {
+  local line="$1" body="$1" located=0
+  if [[ "$line" =~ $SQL_LOCATED_PATTERN ]]; then
+    body="${BASH_REMATCH[2]}"
+    located=1
+  elif [ "${line#"$SQL_PSQL_PREFIX "}" != "$line" ]; then
+    body="${line#"$SQL_PSQL_PREFIX "}"
+    located=1
+  fi
+  case "$body" in
+    "ERROR:"* | "FATAL:"* | "PANIC:"*)
+      if [ "$located" = "1" ]; then
+        LINE_KIND="ERROR_OTHER_PREFIX"
+      else
+        LINE_KIND="ERROR_NO_PREFIX"
+      fi
+      ;;
+    "error: "*)
+      if [ "$located" = "1" ]; then
+        LINE_KIND="PSQL_CLIENT_ERROR"
+      else
+        LINE_KIND="OTHER"
+      fi
+      ;;
+    "WARNING:"*) LINE_KIND="SERVER_WARNING" ;;
+    "NOTICE:"* | "INFO:"* | "LOG:"* | "DEBUG"*) LINE_KIND="SERVER_NOTICE" ;;
+    "DETAIL:"*) LINE_KIND="DETAIL" ;;
+    "HINT:"*) LINE_KIND="HINT" ;;
+    "QUERY:"*) LINE_KIND="QUERY" ;;
+    "STATEMENT:"*) LINE_KIND="STATEMENT" ;;
+    "LINE "[0-9]*) LINE_KIND="LINE" ;;
+    *)
+      if [ "$located" = "1" ] || [ "${line#"$SQL_PSQL_PREFIX"}" != "$line" ]; then
+        LINE_KIND="PSQL_OTHER"
+      elif [ "${line#"$SQL_SUDO_PREFIX"}" != "$line" ]; then
+        LINE_KIND="SUDO"
+      else
+        LINE_KIND="OTHER"
+      fi
+      ;;
+  esac
+}
+
 classify_sql() {
   local status="$1" output="$2"
-  local rest="$output"$'\n' line message="" codes="" expected
+  local rest="$output"$'\n' line message="" codes="" expected kind
   local errors=0 reported=0 unrecognized=0 missing=0 extra=0
+  local lines=0 oversized=0 marker=0 index count
+  local -a counts=(0 0 0 0 0 0 0 0 0 0 0 0 0)
   VERDICT=""
   OBSERVED=""
+  SQL_UNRECOGNIZED=""
+  SQL_ERROR_LINE=""
+  SQL_MARKER=""
+  if [ "${#output}" -gt "$SQL_OUTPUT_BYTE_LIMIT" ]; then
+    oversized=1
+    rest=""
+  fi
   while [ -n "$rest" ]; do
+    lines=$((lines + 1))
+    if [ "$lines" -gt "$SQL_OUTPUT_LINE_LIMIT" ]; then
+      oversized=1
+      break
+    fi
     line="${rest%%$'\n'*}"
     rest="${rest#*$'\n'}"
+    case "$line" in
+      *"CI_SETUP_PREFLIGHT_FAILED:"*) marker=1 ;;
+    esac
+    if [ -z "$SQL_ERROR_LINE" ] && [[ "$line" =~ $SQL_LOCATED_PATTERN ]]; then
+      case "${BASH_REMATCH[2]}" in
+        "ERROR:"* | "FATAL:"* | "PANIC:"* | "error: "*) SQL_ERROR_LINE="${BASH_REMATCH[1]}" ;;
+      esac
+    fi
     case "$line" in
       "") ;;
       "PASS  ci-setup.sql"*) reported=1 ;;
@@ -160,10 +248,41 @@ classify_sql() {
           message="${BASH_REMATCH[1]}"
         else
           unrecognized=1
+          sql_line_kind "$line"
+          index=0
+          for kind in $SQL_KINDS; do
+            if [ "$kind" = "$LINE_KIND" ]; then
+              counts[index]=$((counts[index] + 1))
+            fi
+            index=$((index + 1))
+          done
         fi
         ;;
     esac
   done
+  line=""
+  if [ "$oversized" = "1" ]; then
+    SQL_ERROR_LINE=""
+    VERDICT="CI_REFUSAL_OUTPUT_TOO_LARGE"
+    return 0
+  fi
+  index=0
+  for kind in $SQL_KINDS; do
+    count="${counts[index]}"
+    if [ "$count" -gt "$SQL_KIND_COUNT_LIMIT" ]; then
+      count="$SQL_KIND_COUNT_LIMIT+"
+    fi
+    if [ "$count" != "0" ]; then
+      SQL_UNRECOGNIZED="${SQL_UNRECOGNIZED:+$SQL_UNRECOGNIZED, }$kind x$count"
+    fi
+    index=$((index + 1))
+  done
+  SQL_UNRECOGNIZED="${SQL_UNRECOGNIZED:-none}"
+  if [ "$marker" = "1" ]; then
+    SQL_MARKER="present"
+  else
+    SQL_MARKER="absent"
+  fi
   if [ "$errors" = "1" ] && [ "${message#CI_SETUP_PREFLIGHT_FAILED: }" != "$message" ]; then
     codes="${message#CI_SETUP_PREFLIGHT_FAILED: }"
     if [[ "$codes" =~ $SQL_CODES_PATTERN ]]; then
@@ -208,7 +327,9 @@ classify_sql() {
 }
 
 # PASS for the expected refusal; otherwise FAIL with the verdict, the exit
-# status (digits only), and the well-formed codes seen.
+# status (digits only), and the well-formed codes seen. For sql, also the
+# fixed-label diagnostics classify_sql set, each printed only if it still
+# has its validated form.
 report_verdict() {
   local label="$1"
   if [ "$VERDICT" = "CI_REFUSAL_EXPECTED" ]; then
@@ -222,6 +343,15 @@ report_verdict() {
   if [ -n "$OBSERVED" ]; then
     builtin printf '      observed: %s\n' "$OBSERVED"
   fi
+  if [[ "$SQL_UNRECOGNIZED" =~ $SQL_KINDS_REPORT_PATTERN ]]; then
+    builtin printf '      unrecognized: %s\n' "$SQL_UNRECOGNIZED"
+  fi
+  if [[ "$SQL_ERROR_LINE" =~ $SQL_LINE_NUMBER_PATTERN ]]; then
+    builtin printf '      error input line: %s\n' "$SQL_ERROR_LINE"
+  fi
+  case "$SQL_MARKER" in
+    present | absent) builtin printf '      preflight marker: %s\n' "$SQL_MARKER" ;;
+  esac
   exit 1
 }
 
