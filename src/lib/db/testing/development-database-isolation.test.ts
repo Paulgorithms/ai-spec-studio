@@ -51,6 +51,13 @@ describe("developmentDatabaseIsolationViolations", () => {
       ["CI_DEVELOPMENT_DATABASE_PRESENT"],
     ],
     [
+      "CI, development database present, CONNECT not read: fails",
+      CI_ENV,
+      ciFacts({ developmentDatabaseExists: true, testRoleCanConnect: null }),
+      LINUX,
+      ["CI_DEVELOPMENT_DATABASE_PRESENT"],
+    ],
+    [
       "CI, development database present and open: fails twice",
       CI_ENV,
       ciFacts({ developmentDatabaseExists: true, testRoleCanConnect: true }),

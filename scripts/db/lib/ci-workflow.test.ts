@@ -1260,15 +1260,16 @@ describe("the documentation", () => {
     expect(readme).not.toContain("`npm run test:unit` and CI never include it");
   });
 
-  test("describes the CI job and says it hasn't run on GitHub yet", () => {
+  test("describes the CI job and its first verified GitHub run", () => {
     expect(readme).toContain("## CI integration tests");
-    expect(readme).toContain("**Not yet run on GitHub.**");
+    expect(readme).not.toContain("Not yet run on GitHub");
+    expect(readme).toContain(
+      "**Verified on GitHub.** The whole job first passed on pull request #13 ([run 44883841634](https://github.com/Paulgorithms/ai-spec-studio/actions/runs/44883841634), commit `de2359f`)",
+    );
     expect(claude).toContain("`postgres-integration`: on `ubuntu-26.04`");
-    for (const text of [readme, claude]) {
-      expect(text).not.toMatch(
-        /\b(passes|passed|verified|succeeds|succeeded) (on GitHub|in CI)\b/i,
-      );
-    }
+    expect(claude).not.toMatch(
+      /\b(passes|passed|verified|succeeds|succeeded) (on GitHub|in CI)\b/i,
+    );
   });
 
   test("names every step of the job, in the job's order", () => {
