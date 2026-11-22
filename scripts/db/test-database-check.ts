@@ -6,8 +6,9 @@
 // Loads .env.local when it exists (lib/local-env.ts: a variable already set
 // in the shell wins; no file means the shell must set everything), connects
 // once as TEST_DATABASE_URL (ai_spec_studio_test only), and prints fixed
-// PASS/FAIL labels with codes, ending with the database's state: fresh, the
-// approved migration applied, or unexpected. Never prints URLs, passwords, or
+// PASS/FAIL labels with codes, ending with the database's state: fresh,
+// partial (exactly the first approved migrations), applied (every approved
+// migration), or unexpected. Never prints URLs, passwords, or
 // driver messages, and never writes to the database or takes the advisory
 // lock.
 // Exit code: 0 when every check passes, 1 when any fails, 2 for bad usage.

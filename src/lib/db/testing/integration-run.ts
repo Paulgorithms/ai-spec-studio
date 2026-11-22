@@ -4,13 +4,13 @@
 //   1. checks the migration files and the configuration before connecting
 //      (exactly ai_spec_studio_test@<loopback>:5432/ai_spec_studio_test)
 //   2. opens ONE dedicated connection and, read-only, checks the server,
-//      role, label, privileges, and that the database is exactly the applied
-//      migration with both tables empty
+//      role, label, privileges, and that the database has exactly every
+//      approved migration applied, with every table empty
 //   3. takes the test-database advisory lock on that connection and keeps it
 //      (and the connection) for the whole run
 //   4. checks the same again while holding the lock
 // finish (the globalSetup teardown, after every test file):
-//   5. read-only: both tables still empty, the journal unchanged, and this
+//   5. read-only: every table still empty, the journal unchanged, and this
 //      connection still holds the lock (no one else does)
 //   6. releases the lock, the connection, and the pool, and throws if
 //      anything failed, so the run fails. Rows are reported, never deleted.
@@ -24,17 +24,20 @@ import {
   type PoolFactory,
 } from "../../../../scripts/db/lib/live-verification";
 import {
-  APPROVED_MIGRATION,
+  APPROVED_MIGRATIONS,
   QUERIES,
+  checkMigrationFiles,
+  expectedStructure,
   type Check,
   type MigrationFiles,
 } from "../../../../scripts/db/lib/migration-checks";
 import {
   LOCK_QUERIES,
   LOCK_VALUES,
-  TEST_QUERIES,
   checkTestDatabase,
   checkTestDatabaseConfiguration,
+  emptyTables,
+  rowCountsQuery,
 } from "../../../../scripts/db/lib/test-database-target";
 import { buildPoolConfig } from "../pool-config";
 import type { DatabaseConnection, DatabaseEnv } from "../env";
@@ -129,14 +132,7 @@ export async function startIntegrationRun(
     );
   const failed = () => results.some((result) => !result.pass);
 
-  check(
-    files.journalEntries === 1 && files.tag === APPROVED_MIGRATION.tag,
-    `files: the journal has exactly one entry, ${APPROVED_MIGRATION.tag}`,
-  );
-  check(
-    files.sha256 === APPROVED_MIGRATION.sha256,
-    `files: ${APPROVED_MIGRATION.tag}.sql matches the reviewed SHA-256`,
-  );
+  checkMigrationFiles(files, check);
   const connection = checkTestDatabaseConfiguration(env, check);
   const config = connection ? buildPoolConfig(connection, 1) : undefined;
   if (failed() || !connection || !config?.ok) {
@@ -202,11 +198,11 @@ export async function startIntegrationRun(
 
     let state = "";
     await readOnly(session, async () => {
-      state = await checkTestDatabase(session, files, prefixed("before"));
+      state = (await checkTestDatabase(session, prefixed("before"))).state;
     });
     check(
       state === "applied" && !failed(),
-      "before: the test database has exactly the approved migration, with empty tables",
+      "before: the test database has exactly every approved migration, with empty tables",
     );
     if (failed()) throw new IntegrationRunError("setup", results);
 
@@ -223,13 +219,15 @@ export async function startIntegrationRun(
     check(true, "lock: acquired; held on this connection for the whole run");
 
     await readOnly(session, async () => {
-      state = await checkTestDatabase(session, files, prefixed("locked"), {
-        lockHeldBySelf: true,
-      });
+      state = (
+        await checkTestDatabase(session, prefixed("locked"), {
+          lockHeldBySelf: true,
+        })
+      ).state;
     });
     check(
       state === "applied" && !failed(),
-      "locked: the test database has exactly the approved migration, with empty tables",
+      "locked: the test database has exactly every approved migration, with empty tables",
     );
     if (failed()) throw new IntegrationRunError("setup", results);
   } catch (error) {
@@ -240,6 +238,7 @@ export async function startIntegrationRun(
     throw new IntegrationRunError("setup", results);
   }
 
+  const tables = expectedStructure(APPROVED_MIGRATIONS.length).tables;
   let finished = false;
   const finish = async () => {
     if (finished) return;
@@ -261,19 +260,21 @@ export async function startIntegrationRun(
       try {
         await readOnly(session, async () => {
           const counts =
-            (await session.query(TEST_QUERIES.rowCounts)).rows[0] ?? {};
+            (await session.query(rowCountsQuery(tables))).rows[0] ?? {};
+          const { empty, detail } = emptyTables(counts, tables);
           record(
-            counts.projects === 0 && counts.specifications === 0,
-            "after: both tables are still empty (no test left rows behind)",
-            counts.projects === 0 && counts.specifications === 0
-              ? undefined
-              : `(projects: ${Number(counts.projects)}, specifications: ${Number(counts.specifications)})`,
+            empty,
+            `after: all ${tables.length} tables are still empty (no test left rows behind)`,
+            empty ? undefined : detail,
           );
           const journal = (await session.query(QUERIES.journal)).rows;
           record(
-            journal.length === 1 &&
-              journal[0]?.hash === files.sha256 &&
-              journal[0]?.created_at === String(files.when),
+            journal.length === APPROVED_MIGRATIONS.length &&
+              APPROVED_MIGRATIONS.every(
+                (m, i) =>
+                  journal[i]?.hash === m.sha256 &&
+                  journal[i]?.created_at === String(m.when),
+              ),
             "after: the migration journal is unchanged",
           );
           const lock =

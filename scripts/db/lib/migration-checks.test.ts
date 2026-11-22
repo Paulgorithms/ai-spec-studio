@@ -5,175 +5,40 @@ import {
   PROJECT_SLUG_PATTERN,
   SPECIFICATION_KEY_PATTERN,
 } from "../../../src/lib/db/schema";
+import {
+  DEV_APPLIED,
+  DEV_FRESH,
+  DEV_PARTIAL,
+  FILES,
+  journalRows,
+  pg18Constraints,
+  regexRows,
+  type Answers,
+  type Rows,
+} from "./fixtures/test-database-answers";
 import { formatResults, type CheckResult } from "./live-verification";
 import {
-  APPROVED_MIGRATION,
+  APPROVED_MIGRATIONS,
   compareConstraints,
-  type ConstraintRow,
-  EXPECTED_COLUMNS,
-  EXPECTED_CONSTRAINTS,
-  EXPECTED_INDEXES,
+  expectedStructure,
   QUERIES,
   REGEX_CASES,
   runMigrationChecks,
+  type ConstraintRow,
   type MigrationFiles,
   type Phase,
 } from "./migration-checks";
 
 // A fake pg pool, as in live-verification.test.ts: no sockets; queries are
 // answered by the /* name */ comment that starts each one.
-type Rows = Record<string, unknown>[];
-type Answers = Record<string, Rows | Error>;
-
 const PASSWORD = "FakeMigrator:p@ss/word";
 const MIGRATION_URL = `postgresql://ai_spec_studio_migrator:${encodeURIComponent(PASSWORD)}@127.0.0.1:5432/ai_spec_studio_dev`;
 const ENV = {
   DATABASE_MIGRATION_URL: MIGRATION_URL,
   DATABASE_SSL_MODE: "disable",
 };
-const FILES: MigrationFiles = {
-  journalEntries: 1,
-  tag: APPROVED_MIGRATION.tag,
-  when: 1794739919891,
-  sha256: APPROVED_MIGRATION.sha256,
-};
-
-const common = (schemas: string[]): Answers => ({
-  session: [
-    {
-      version_num: 180006,
-      server_addr: "127.0.0.1/32",
-      server_port: 5432,
-      client_addr: "127.0.0.1/32",
-      current_role_name: "ai_spec_studio_migrator",
-      session_role_name: "ai_spec_studio_migrator",
-      database_name: "ai_spec_studio_dev",
-      auth_identity: "scram-sha-256:ai_spec_studio_migrator",
-      search_path: '"$user", public',
-      current_schema_name: "public",
-      read_only: "on",
-      ssl: false,
-    },
-  ],
-  role: [
-    {
-      rolsuper: false,
-      rolcreaterole: false,
-      rolcreatedb: false,
-      rolreplication: false,
-      rolbypassrls: false,
-    },
-  ],
-  label: [{ setconfig: ["app.environment=development"] }],
-  schemas: schemas.map((name) => ({ name })),
-});
-
-// What PostgreSQL returns for the matching regex inputs: the expected values.
-const regexRows = (flip: number[] = []) =>
-  REGEX_CASES.map((c, i) => ({
-    i: i + 1,
-    matched: flip.includes(i + 1) ? !c.matches : c.matches,
-  }));
-
-const PRE: Answers = {
-  ...common(["public"]),
-  privileges: [{ create_db: true, usage_public: true, create_public: true }],
-  objects: [
-    {
-      projects: false,
-      specifications: false,
-      journal: false,
-      public_relations: 0,
-    },
-  ],
-  sessions: [{ other_migrator_sessions: 0 }],
-  regex: regexRows(),
-};
-
-const DEFS: Record<string, string> = {
-  projects_pkey: "PRIMARY KEY (id)",
-  projects_slug_format_check: `CHECK ((slug ~ '${PROJECT_SLUG_PATTERN}'::text))`,
-  projects_slug_unique: "UNIQUE (slug)",
-  specifications_key_format_check: `CHECK ((key ~ '${SPECIFICATION_KEY_PATTERN}'::text))`,
-  specifications_key_unique: "UNIQUE (key)",
-  specifications_pkey: "PRIMARY KEY (id)",
-  specifications_project_id_fkey:
-    "FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE RESTRICT",
-  specifications_status_check:
-    "CHECK ((status = ANY (ARRAY['draft'::text, 'in-review'::text, 'approved'::text])))",
-};
-
-// pg_constraint for schema public as PostgreSQL 18 returns it: the eight
-// approved constraints plus one NOT NULL row (contype 'n', named
-// <table>_<column>_not_null) per column, sorted by table and name in byte
-// order, as QUERIES.constraints sorts them.
-function pg18ConstraintRows(): Rows {
-  const approved = EXPECTED_CONSTRAINTS.map(([table_name, name, type]) => ({
-    table_name,
-    name,
-    type,
-    definition: DEFS[name],
-    column_name: null,
-  }));
-  const notNull = EXPECTED_COLUMNS.map(([table_name, column]) => ({
-    table_name,
-    name: `${table_name}_${column}_not_null`,
-    type: "n",
-    definition: `NOT NULL ${column}`,
-    column_name: column,
-  }));
-  const key = (row: { table_name: string; name: string }) =>
-    `${row.table_name}\u0000${row.name}`;
-  return [...approved, ...notNull].sort((a, b) =>
-    key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0,
-  );
-}
-
-const POST: Answers = {
-  ...common(["drizzle", "public"]),
-  tables: ["projects", "specifications"].map((name) => ({
-    name,
-    kind: "r",
-    owner: "ai_spec_studio_migrator",
-    rls: false,
-  })),
-  columns: EXPECTED_COLUMNS.map(
-    ([table_name, column_name, type, nullable, default_value]) => ({
-      table_name,
-      column_name,
-      type,
-      nullable,
-      default_value,
-    }),
-  ),
-  constraints: pg18ConstraintRows(),
-  indexes: EXPECTED_INDEXES.map(([table_name, name, fragment]) => ({
-    table_name,
-    name,
-    definition: `CREATE INDEX ${name} ON public.${table_name} ${fragment}`,
-  })),
-  extras: [{ triggers: 0, functions: 0 }],
-  grants: ["projects", "specifications"].map((table_name) => ({
-    table_name,
-    app_select: true,
-    app_insert: true,
-    app_update: true,
-    app_delete: true,
-    app_other: false,
-    test_any: false,
-    public_any: false,
-  })),
-  journal_access: [
-    {
-      schema_owner: "ai_spec_studio_migrator",
-      table_owner: "ai_spec_studio_migrator",
-      app_usage: false,
-      test_usage: false,
-      app_create_public: false,
-    },
-  ],
-  journal: [{ hash: APPROVED_MIGRATION.sha256, created_at: "1794739919891" }],
-};
+const [M0, M1] = APPROVED_MIGRATIONS;
+if (!M0 || !M1) throw new Error("two approved migrations expected");
 
 type Call = { text: string; values?: unknown[] };
 
@@ -251,11 +116,19 @@ function expectNoSecrets(output: string) {
   expect(output).not.toContain("Fake");
 }
 
+const UNEXPECTED =
+  "state: neither fresh nor exactly the first approved migrations, in order";
+const READY_FROM_PARTIAL =
+  "state: ready to apply 0001_auth_tables (0000_initial_schema applied exactly)";
+
 describe("the pre phase", () => {
-  test("passes with the approved state, read-only, and closes the pool", async () => {
-    const { state, results, output } = await run("pre", PRE);
+  test("passes on a fresh database, read-only, and closes the pool", async () => {
+    const { state, results, output } = await run("pre", DEV_FRESH);
     expect(failed(results)).toEqual([]);
-    expect(output).toMatch(/ALL 27 CHECKS PASSED$/);
+    expect(output).toContain(
+      "PASS  state: ready to apply 0000_initial_schema, 0001_auth_tables",
+    );
+    expect(output).toMatch(/ALL 32 CHECKS PASSED$/);
     expect(state.created).toBe(1);
     expect(state.released && state.ended).toBe(true);
     expect(state.calls[0]?.text).toBe("BEGIN TRANSACTION READ ONLY");
@@ -263,11 +136,39 @@ describe("the pre phase", () => {
     for (const call of state.calls.slice(1, -1)) {
       expect(call.text).toMatch(/^\/\* \w+ \*\/\nSELECT /);
     }
+    // A fresh database has no journal to read.
+    expect(state.calls.some((c) => c.text === QUERIES.journal)).toBe(false);
     expectNoSecrets(output);
   });
 
+  test("passes with exactly 0000_initial_schema applied (the development database today)", async () => {
+    const { state, results, output } = await run("pre", DEV_PARTIAL);
+    expect(failed(results)).toEqual([]);
+    expect(output).toContain(`PASS  ${READY_FROM_PARTIAL}`);
+    expect(output).toContain(
+      "PASS  tables: exactly projects and specifications in public, owned by ai_spec_studio_migrator, no row-level security",
+    );
+    expect(output).toContain(
+      "PASS  grants: ai_spec_studio_app has exactly SELECT, INSERT, UPDATE, DELETE on all 2 tables",
+    );
+    expect(output).toMatch(/ALL 42 CHECKS PASSED$/);
+    expect(state.calls.find((c) => c.text === QUERIES.grants)?.values).toEqual([
+      "ai_spec_studio_app",
+      "ai_spec_studio_test",
+      ["projects", "specifications"],
+    ]);
+    expectNoSecrets(output);
+  });
+
+  test("fails when every approved migration is already applied", async () => {
+    const { results } = await run("pre", DEV_APPLIED);
+    expect(failed(results)).toEqual([
+      "state: nothing to migrate (every approved migration is already applied); use the post phase",
+    ]);
+  });
+
   test("sends the regex cases and the schema's own patterns as parameters", async () => {
-    const { state } = await run("pre", PRE);
+    const { state } = await run("pre", DEV_FRESH);
     const call = state.calls.find((c) => c.text === QUERIES.regex);
     expect(call?.values).toEqual([
       REGEX_CASES.map((c) => c.input),
@@ -279,36 +180,138 @@ describe("the pre phase", () => {
 
   test.each([
     [
-      "the journal already exists",
-      {
-        objects: [
-          {
-            projects: false,
-            specifications: false,
-            journal: true,
-            public_relations: 0,
-          },
-        ],
-      },
-      "state: no drizzle migration journal",
+      "a journal without the drizzle schema",
+      { ...DEV_FRESH, objects: [{ journal: true, public_relations: 0 }] },
+      "(NO_DRIZZLE_SCHEMA, JOURNAL, PUBLIC_EMPTY)",
     ],
     [
-      "a table already exists",
+      "the drizzle schema without a journal",
+      { ...DEV_FRESH, schemas: [{ name: "drizzle" }, { name: "public" }] },
+      "(DRIZZLE_SCHEMA, NO_JOURNAL, PUBLIC_EMPTY)",
+    ],
+    [
+      "tables without a journal",
+      { ...DEV_FRESH, objects: [{ journal: false, public_relations: 8 }] },
+      "(NO_DRIZZLE_SCHEMA, NO_JOURNAL, PUBLIC_NOT_EMPTY)",
+    ],
+    [
+      "an empty journal (a failed first migration)",
+      { ...DEV_PARTIAL, journal: [] },
+      "(DRIZZLE_SCHEMA, JOURNAL, PUBLIC_NOT_EMPTY, JOURNAL_ROWS_0, JOURNAL_EMPTY)",
+    ],
+    [
+      "only 0001 journaled",
+      { ...DEV_PARTIAL, journal: journalRows(2).slice(1) },
+      "(DRIZZLE_SCHEMA, JOURNAL, PUBLIC_NOT_EMPTY, JOURNAL_ROWS_1, JOURNAL_NOT_APPROVED_PREFIX)",
+    ],
+    [
+      "the two migrations journaled in the wrong order",
+      { ...DEV_PARTIAL, journal: [...journalRows(2)].reverse() },
+      "(DRIZZLE_SCHEMA, JOURNAL, PUBLIC_NOT_EMPTY, JOURNAL_ROWS_2, JOURNAL_NOT_APPROVED_PREFIX)",
+    ],
+    [
+      "a changed hash",
       {
-        objects: [
+        ...DEV_PARTIAL,
+        journal: [{ hash: "0".repeat(64), created_at: String(M0.when) }],
+      },
+      "(DRIZZLE_SCHEMA, JOURNAL, PUBLIC_NOT_EMPTY, JOURNAL_ROWS_1, JOURNAL_NOT_APPROVED_PREFIX)",
+    ],
+    [
+      "a changed timestamp",
+      {
+        ...DEV_PARTIAL,
+        journal: [{ hash: M0.sha256, created_at: String(M0.when + 1) }],
+      },
+      "(DRIZZLE_SCHEMA, JOURNAL, PUBLIC_NOT_EMPTY, JOURNAL_ROWS_1, JOURNAL_NOT_APPROVED_PREFIX)",
+    ],
+    [
+      "a migration journaled twice",
+      { ...DEV_PARTIAL, journal: [...journalRows(1), ...journalRows(1)] },
+      "(DRIZZLE_SCHEMA, JOURNAL, PUBLIC_NOT_EMPTY, JOURNAL_ROWS_2, JOURNAL_NOT_APPROVED_PREFIX)",
+    ],
+    [
+      "an unknown third migration",
+      {
+        ...DEV_PARTIAL,
+        journal: [
+          ...journalRows(2),
+          { hash: "f".repeat(64), created_at: String(M1.when + 1) },
+        ],
+      },
+      "(DRIZZLE_SCHEMA, JOURNAL, PUBLIC_NOT_EMPTY, JOURNAL_ROWS_3, JOURNAL_NOT_APPROVED_PREFIX)",
+    ],
+  ])("refuses %s as unexpected", async (_, answers, detail) => {
+    const { results, state } = await run("pre", answers as Answers);
+    const result = results.find((r) => r.label === UNEXPECTED);
+    expect(result).toEqual({ pass: false, label: UNEXPECTED, detail });
+    expect(failed(results)).toContain(UNEXPECTED);
+    expect(state.ended).toBe(true);
+  });
+
+  const partialTables = DEV_PARTIAL.tables as Rows;
+  const partialGrants = DEV_PARTIAL.grants as Rows;
+  test.each([
+    [
+      "the auth tables created without being journaled",
+      {
+        tables: [
+          ...partialTables,
           {
-            projects: true,
-            specifications: false,
-            journal: false,
-            public_relations: 1,
+            name: "users",
+            kind: "r",
+            owner: "ai_spec_studio_migrator",
+            rls: false,
           },
         ],
       },
-      [
-        "state: public.projects and public.specifications don't exist",
-        "state: schema public is empty",
-      ],
+      "tables: exactly projects and specifications in public, owned by ai_spec_studio_migrator, no row-level security",
     ],
+    [
+      "a table owned by someone else",
+      {
+        tables: [{ ...partialTables[0], owner: "postgres" }, partialTables[1]],
+      },
+      "tables: exactly projects and specifications in public, owned by ai_spec_studio_migrator, no row-level security",
+    ],
+    [
+      "a missing app grant",
+      {
+        grants: [{ ...partialGrants[0], app_delete: false }, partialGrants[1]],
+      },
+      "grants: ai_spec_studio_app has exactly SELECT, INSERT, UPDATE, DELETE on all 2 tables",
+    ],
+    [
+      "a PUBLIC grant",
+      { grants: partialGrants.map((g) => ({ ...g, public_any: true })) },
+      "grants: ai_spec_studio_test and PUBLIC have no table privileges",
+    ],
+    [
+      "app access to the journal",
+      {
+        journal_access: [
+          { ...(DEV_PARTIAL.journal_access as Rows)[0], app_usage: true },
+        ],
+      },
+      "journal: the app and test roles can't use the drizzle schema; the app can't create in public",
+    ],
+  ])(
+    "refuses a partially migrated database with %s",
+    async (_, change, label) => {
+      const { results } = await run("pre", {
+        ...DEV_PARTIAL,
+        ...(change as Answers),
+      });
+      expect(results.find((r) => r.label === READY_FROM_PARTIAL)).toEqual({
+        pass: false,
+        label: READY_FROM_PARTIAL,
+        detail: "(see the failures above)",
+      });
+      expect(failed(results)).toEqual([label, READY_FROM_PARTIAL]);
+    },
+  );
+
+  test.each([
     [
       "a schema named after the migrator",
       { schemas: [{ name: "ai_spec_studio_migrator" }, { name: "public" }] },
@@ -320,7 +323,9 @@ describe("the pre phase", () => {
     [
       "a different search_path",
       {
-        session: [{ ...(PRE.session as Rows)[0], search_path: "app, public" }],
+        session: [
+          { ...(DEV_FRESH.session as Rows)[0], search_path: "app, public" },
+        ],
       },
       'session: search_path is "$user", public and current_schema() is public',
     ],
@@ -349,17 +354,21 @@ describe("the pre phase", () => {
     ],
     [
       "trust or peer login",
-      { session: [{ ...(PRE.session as Rows)[0], auth_identity: null }] },
+      {
+        session: [{ ...(DEV_FRESH.session as Rows)[0], auth_identity: null }],
+      },
       "session: authenticated with SCRAM-SHA-256",
     ],
     [
       "PostgreSQL 17",
-      { session: [{ ...(PRE.session as Rows)[0], version_num: 170005 }] },
+      {
+        session: [{ ...(DEV_FRESH.session as Rows)[0], version_num: 170005 }],
+      },
       "server: PostgreSQL 18",
     ],
     [
       "another port",
-      { session: [{ ...(PRE.session as Rows)[0], server_port: 5433 }] },
+      { session: [{ ...(DEV_FRESH.session as Rows)[0], server_port: 5433 }] },
       "server: loopback endpoint, port 5432",
     ],
     [
@@ -369,21 +378,24 @@ describe("the pre phase", () => {
     ],
     [
       "a superuser migrator",
-      { role: [{ ...(PRE.role as Rows)[0], rolsuper: true }] },
+      { role: [{ ...(DEV_FRESH.role as Rows)[0], rolsuper: true }] },
       "role: no superuser, CREATEROLE, CREATEDB, REPLICATION, or BYPASSRLS",
     ],
   ])("fails when %s", async (_, override, label) => {
-    const { results, state } = await run("pre", {
-      ...PRE,
-      ...(override as Answers),
-    });
-    expect(failed(results)).toEqual([label].flat());
-    expect(state.ended).toBe(true);
+    for (const base of [DEV_FRESH, DEV_PARTIAL]) {
+      const changed = { ...base, ...(override as Answers) };
+      // A schema list that doesn't match the state also fails the schema
+      // check for a partially migrated database.
+      if ("schemas" in (override as Answers) && base === DEV_PARTIAL) continue;
+      const { results, state } = await run("pre", changed);
+      expect(failed(results)).toEqual([label].flat());
+      expect(state.ended).toBe(true);
+    }
   });
 
   test("names the regex cases PostgreSQL evaluates differently, by number", async () => {
     const { results } = await run("pre", {
-      ...PRE,
+      ...DEV_FRESH,
       regex: regexRows([10, 22]),
     });
     expect(results.filter((r) => !r.pass)).toEqual([
@@ -404,17 +416,153 @@ describe("the pre phase", () => {
 });
 
 describe("failing closed before connecting", () => {
+  const entries = FILES.journal.entries;
+  const filesWith = (change: Partial<MigrationFiles>): MigrationFiles => ({
+    ...FILES,
+    ...change,
+  });
+  const JOURNAL_LABEL =
+    "files: the journal lists exactly 0000_initial_schema, 0001_auth_tables, in that order, with the reviewed timestamps";
+  const LISTING_LABEL =
+    "files: drizzle/ holds exactly the 2 approved migrations, their snapshots, and the journal";
+  const CHAIN_LABEL =
+    "files: the snapshots form one chain (each prevId is the previous snapshot's id)";
+  const ORDER_LABEL =
+    "files: journal timestamps strictly increase (the migrator relies on it)";
+
   test.each([
     [
-      "a changed migration file",
-      { files: { ...FILES, sha256: "0".repeat(64) } },
-      "files: 0000_initial_schema.sql matches the reviewed SHA-256",
+      "a changed 0000 migration",
+      filesWith({
+        sha256: { ...FILES.sha256, "0000_initial_schema.sql": "0".repeat(64) },
+      }),
+      ["files: 0000_initial_schema.sql matches the reviewed SHA-256"],
     ],
     [
-      "a second journal entry",
-      { files: { ...FILES, journalEntries: 2 } },
-      "files: the journal has exactly one entry, 0000_initial_schema",
+      "a changed 0001 migration",
+      filesWith({
+        sha256: { ...FILES.sha256, "0001_auth_tables.sql": "0".repeat(64) },
+      }),
+      ["files: 0001_auth_tables.sql matches the reviewed SHA-256"],
     ],
+    [
+      "a changed snapshot",
+      filesWith({
+        sha256: { ...FILES.sha256, "meta/0001_snapshot.json": "0".repeat(64) },
+      }),
+      ["files: meta/0001_snapshot.json matches the reviewed SHA-256"],
+    ],
+    [
+      "a missing 0001 (journal, SQL, and snapshot)",
+      filesWith({
+        listing: FILES.listing.filter(
+          (p) => !p.startsWith("0001") && p !== "meta/0001_snapshot.json",
+        ),
+        journal: { ...FILES.journal, entries: entries.slice(0, 1) },
+        sha256: {
+          "0000_initial_schema.sql": M0.sha256,
+          "meta/0000_snapshot.json": M0.snapshot.sha256,
+        },
+        snapshots: {
+          "meta/0000_snapshot.json": {
+            id: M0.snapshot.id,
+            prevId: M0.snapshot.prevId,
+          },
+        },
+      }),
+      [
+        LISTING_LABEL,
+        JOURNAL_LABEL,
+        "files: 0001_auth_tables.sql matches the reviewed SHA-256",
+        "files: meta/0001_snapshot.json matches the reviewed SHA-256",
+        CHAIN_LABEL,
+      ],
+    ],
+    [
+      "an extra SQL file",
+      filesWith({ listing: [...FILES.listing, "0002_extra.sql"].sort() }),
+      [LISTING_LABEL],
+    ],
+    [
+      "a symbolic link in drizzle/",
+      filesWith({ listing: [...FILES.listing, "0002_extra.sql@"].sort() }),
+      [LISTING_LABEL],
+    ],
+    [
+      "a third journal entry",
+      filesWith({
+        journal: {
+          ...FILES.journal,
+          entries: [
+            ...entries,
+            {
+              idx: 2,
+              version: "7",
+              when: M1.when + 1,
+              tag: "0002_extra",
+              breakpoints: true,
+            },
+          ],
+        },
+      }),
+      [JOURNAL_LABEL],
+    ],
+    [
+      "reordered journal entries",
+      filesWith({
+        journal: { ...FILES.journal, entries: [...entries].reverse() },
+      }),
+      [JOURNAL_LABEL, ORDER_LABEL],
+    ],
+    [
+      "a changed journal timestamp",
+      filesWith({
+        journal: {
+          ...FILES.journal,
+          entries: [entries[0]!, { ...entries[1]!, when: M0.when - 1 }],
+        },
+      }),
+      [JOURNAL_LABEL, ORDER_LABEL],
+    ],
+    [
+      "journal entries without breakpoints",
+      filesWith({
+        journal: {
+          ...FILES.journal,
+          entries: entries.map((e) => ({ ...e, breakpoints: false })),
+        },
+      }),
+      [JOURNAL_LABEL],
+    ],
+    [
+      "a broken snapshot chain",
+      filesWith({
+        snapshots: {
+          ...FILES.snapshots,
+          "meta/0001_snapshot.json": {
+            id: M1.snapshot.id,
+            prevId: "00000000-0000-0000-0000-000000000000",
+          },
+        },
+      }),
+      [CHAIN_LABEL],
+    ],
+  ])("never creates a pool for %s", async (_, files, labels) => {
+    for (const phase of ["pre", "post", "constraints"] as const) {
+      const { state, results } = await run(
+        phase,
+        phase === "pre" ? DEV_FRESH : DEV_APPLIED,
+        { files },
+      );
+      expect(state.created).toBe(0);
+      expect(failed(results)).toEqual([
+        ...labels,
+        "connection skipped (a check above failed)",
+      ]);
+    }
+  });
+
+  test.each([
     [
       "a PG* variable",
       { env: { ...ENV, PGHOST: "FakeHost" } },
@@ -469,7 +617,7 @@ describe("failing closed before connecting", () => {
     for (const phase of ["pre", "post"] as const) {
       const { state, results, output } = await run(
         phase,
-        phase === "pre" ? PRE : POST,
+        phase === "pre" ? DEV_FRESH : DEV_APPLIED,
         options,
       );
       expect(state.created).toBe(0);
@@ -484,29 +632,103 @@ describe("failing closed before connecting", () => {
 });
 
 describe("the post phase", () => {
-  test("passes with the reviewed result", async () => {
-    const { results, output, state } = await run("post", POST);
+  test("passes with every approved migration applied as reviewed", async () => {
+    const { results, output, state } = await run("post", DEV_APPLIED);
     expect(failed(results)).toEqual([]);
-    expect(output).toMatch(/ALL 30 CHECKS PASSED$/);
+    expect(output).toContain(
+      "PASS  tables: exactly accounts, projects, sessions, specifications, users, and verifications in public, owned by ai_spec_studio_migrator, no row-level security",
+    );
+    expect(output).toContain(
+      "PASS  journal: exactly 2 applied migrations, in order, with the reviewed hashes and timestamps (0000_initial_schema, 0001_auth_tables)",
+    );
+    expect(output).toContain(
+      "PASS  constraints: exactly the 18 reviewed primary key, UNIQUE, CHECK, and foreign key constraints",
+    );
+    expect(output).toContain(
+      "PASS  constraints: exactly one NOT NULL constraint for each of the 38 NOT NULL columns",
+    );
+    expect(output).toContain(
+      "PASS  indexes: exactly the 16 reviewed indexes, with updated_at DESC",
+    );
+    expect(output).toMatch(/ALL 36 CHECKS PASSED$/);
     expect(state.calls.find((c) => c.text === QUERIES.grants)?.values).toEqual([
       "ai_spec_studio_app",
       "ai_spec_studio_test",
+      [
+        "accounts",
+        "projects",
+        "sessions",
+        "specifications",
+        "users",
+        "verifications",
+      ],
     ]);
     expectNoSecrets(output);
   });
 
-  const tables = POST.tables as Rows;
-  const columns = POST.columns as Rows;
-  const constraints = POST.constraints as Rows;
-  const indexes = POST.indexes as Rows;
-  const grants = POST.grants as Rows;
-  const access = (POST.journal_access as Rows)[0];
+  test.each([
+    [
+      "only 0000_initial_schema applied",
+      DEV_PARTIAL,
+      "(pending: 0001_auth_tables)",
+    ],
+    ["a fresh database", DEV_FRESH, "(FRESH)"],
+    [
+      "an unexpected journal",
+      { ...DEV_APPLIED, journal: [...journalRows(2)].reverse() },
+      "(DRIZZLE_SCHEMA, JOURNAL, PUBLIC_NOT_EMPTY, JOURNAL_ROWS_2, JOURNAL_NOT_APPROVED_PREFIX)",
+    ],
+  ])("fails for %s", async (_, answers, detail) => {
+    const { results } = await run("post", answers as Answers);
+    expect(
+      results.find((r) => r.label.startsWith("state: every approved")),
+    ).toEqual({
+      pass: false,
+      label:
+        "state: every approved migration is applied (0000_initial_schema, 0001_auth_tables)",
+      detail,
+    });
+  });
+
+  const tables = DEV_APPLIED.tables as Rows;
+  const columns = DEV_APPLIED.columns as Rows;
+  const constraints = DEV_APPLIED.constraints as Rows;
+  const indexes = DEV_APPLIED.indexes as Rows;
+  const grants = DEV_APPLIED.grants as Rows;
+  const access = (DEV_APPLIED.journal_access as Rows)[0];
+  const TABLES_LABEL =
+    "tables: exactly accounts, projects, sessions, specifications, users, and verifications in public, owned by ai_spec_studio_migrator, no row-level security";
+  const COLUMNS_LABEL =
+    "columns: names, order, types, nullability, and defaults of the 48 reviewed columns";
+  const CONSTRAINTS_LABEL =
+    "constraints: exactly the 18 reviewed primary key, UNIQUE, CHECK, and foreign key constraints";
+  const NOT_NULL_LABEL =
+    "constraints: exactly one NOT NULL constraint for each of the 38 NOT NULL columns";
+  const INDEXES_LABEL =
+    "indexes: exactly the 16 reviewed indexes, with updated_at DESC";
+  const APP_GRANTS_LABEL =
+    "grants: ai_spec_studio_app has exactly SELECT, INSERT, UPDATE, DELETE on all 6 tables";
+  const withDefinition = (name: string, definition: string) =>
+    constraints.map((c) => (c.name === name ? { ...c, definition } : c));
 
   test.each([
     [
       "a table owned by someone else",
-      { tables: [{ ...tables[0], owner: "postgres" }, tables[1]] },
-      "tables: exactly projects and specifications in public, owned by ai_spec_studio_migrator, no row-level security",
+      {
+        tables: tables.map((t) =>
+          t.name === "sessions" ? { ...t, owner: "postgres" } : t,
+        ),
+      },
+      TABLES_LABEL,
+    ],
+    [
+      "row-level security on users",
+      {
+        tables: tables.map((t) =>
+          t.name === "users" ? { ...t, rls: true } : t,
+        ),
+      },
+      TABLES_LABEL,
     ],
     [
       "an extra table",
@@ -514,14 +736,19 @@ describe("the post phase", () => {
         tables: [
           ...tables,
           {
-            name: "users",
+            name: "zz_extra",
             kind: "r",
             owner: "ai_spec_studio_migrator",
             rls: false,
           },
         ],
       },
-      "tables: exactly projects and specifications in public, owned by ai_spec_studio_migrator, no row-level security",
+      TABLES_LABEL,
+    ],
+    [
+      "a missing table",
+      { tables: tables.filter((t) => t.name !== "verifications") },
+      TABLES_LABEL,
     ],
     [
       "a changed default",
@@ -530,73 +757,198 @@ describe("the post phase", () => {
           c.column_name === "status" ? { ...c, default_value: null } : c,
         ),
       },
-      "columns: names, order, types, NOT NULL, and defaults as reviewed",
+      COLUMNS_LABEL,
     ],
     [
-      "a nullable column",
+      "email_verified defaulting to true",
       {
-        columns: columns.map((c, i) =>
-          i === 1 ? { ...c, nullable: "YES" } : c,
-        ),
-      },
-      "columns: names, order, types, NOT NULL, and defaults as reviewed",
-    ],
-    [
-      "a CASCADE foreign key",
-      {
-        constraints: constraints.map((c) =>
-          c.type === "f"
-            ? {
-                ...c,
-                definition:
-                  "FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE",
-              }
+        columns: columns.map((c) =>
+          c.column_name === "email_verified"
+            ? { ...c, default_value: "true" }
             : c,
         ),
       },
-      "constraints: primary keys, UNIQUE, CHECK, and the RESTRICT foreign key as reviewed",
+      COLUMNS_LABEL,
+    ],
+    [
+      "a NOT NULL ip_address",
+      {
+        columns: columns.map((c) =>
+          c.column_name === "ip_address" ? { ...c, nullable: "NO" } : c,
+        ),
+      },
+      COLUMNS_LABEL,
+    ],
+    [
+      "a text user_id",
+      {
+        columns: columns.map((c) =>
+          c.table_name === "sessions" && c.column_name === "user_id"
+            ? { ...c, type: "text" }
+            : c,
+        ),
+      },
+      COLUMNS_LABEL,
+    ],
+    [
+      "a timestamp without time zone",
+      {
+        columns: columns.map((c) =>
+          c.table_name === "sessions" && c.column_name === "expires_at"
+            ? { ...c, type: "timestamp(3) without time zone" }
+            : c,
+        ),
+      },
+      COLUMNS_LABEL,
+    ],
+    [
+      "a CASCADE foreign key on specifications",
+      {
+        constraints: withDefinition(
+          "specifications_project_id_fkey",
+          "FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE",
+        ),
+      },
+      CONSTRAINTS_LABEL,
+    ],
+    [
+      "a RESTRICT foreign key on sessions",
+      {
+        constraints: withDefinition(
+          "sessions_user_id_fkey",
+          "FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE RESTRICT",
+        ),
+      },
+      CONSTRAINTS_LABEL,
+    ],
+    [
+      "ON UPDATE CASCADE on accounts",
+      {
+        constraints: withDefinition(
+          "accounts_user_id_fkey",
+          "FOREIGN KEY (user_id) REFERENCES users(id) ON UPDATE CASCADE ON DELETE CASCADE",
+        ),
+      },
+      CONSTRAINTS_LABEL,
+    ],
+    [
+      "a deferrable foreign key",
+      {
+        constraints: withDefinition(
+          "accounts_user_id_fkey",
+          "FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE DEFERRABLE",
+        ),
+      },
+      CONSTRAINTS_LABEL,
+    ],
+    [
+      "a weakened password CHECK",
+      {
+        constraints: withDefinition(
+          "accounts_password_null_check",
+          "CHECK (((password IS NULL) OR true))",
+        ),
+      },
+      CONSTRAINTS_LABEL,
+    ],
+    [
+      "a NOT VALID password CHECK",
+      {
+        constraints: withDefinition(
+          "accounts_password_null_check",
+          "CHECK ((password IS NULL)) NOT VALID",
+        ),
+      },
+      CONSTRAINTS_LABEL,
+    ],
+    [
+      "a missing password CHECK",
+      {
+        constraints: constraints.filter(
+          (c) => c.name !== "accounts_password_null_check",
+        ),
+      },
+      CONSTRAINTS_LABEL,
+    ],
+    [
+      "a provider allowlist CHECK (rejected in the design)",
+      {
+        constraints: pg18Constraints()
+          .concat({
+            table_name: "accounts",
+            name: "accounts_provider_id_check",
+            type: "c",
+            definition:
+              "CHECK ((provider_id = ANY (ARRAY['github'::text, 'google'::text])))",
+            column_name: null,
+          })
+          .sort((a, b) =>
+            `${a.table_name}\u0000${a.name}` < `${b.table_name}\u0000${b.name}`
+              ? -1
+              : 1,
+          ),
+      },
+      CONSTRAINTS_LABEL,
+    ],
+    [
+      "a case-insensitive email UNIQUE instead of the plain one",
+      {
+        constraints: constraints.filter((c) => c.name !== "users_email_unique"),
+      },
+      CONSTRAINTS_LABEL,
+    ],
+    [
+      "a reversed (account_id, provider_id) UNIQUE",
+      {
+        constraints: withDefinition(
+          "accounts_provider_id_account_id_unique",
+          "UNIQUE (account_id, provider_id)",
+        ),
+      },
+      CONSTRAINTS_LABEL,
+    ],
+    [
+      "UNIQUE NULLS NOT DISTINCT on the session token",
+      {
+        constraints: withDefinition(
+          "sessions_token_unique",
+          "UNIQUE NULLS NOT DISTINCT (token)",
+        ),
+      },
+      CONSTRAINTS_LABEL,
     ],
     [
       "a missing NOT NULL constraint",
       {
         constraints: constraints.filter(
-          (c) => c.name !== "specifications_title_not_null",
+          (c) => c.name !== "sessions_token_not_null",
         ),
       },
-      "constraints: exactly one NOT NULL constraint for each of the 14 columns",
+      NOT_NULL_LABEL,
     ],
     [
       "no NOT NULL rows (the pre-18 catalog shape)",
       { constraints: constraints.filter((c) => c.type !== "n") },
-      "constraints: exactly one NOT NULL constraint for each of the 14 columns",
+      NOT_NULL_LABEL,
     ],
     [
-      "a NOT NULL constraint on an unknown column",
+      "a NOT NULL constraint on a nullable column",
       {
         constraints: [
           ...constraints,
           {
-            table_name: "projects",
-            name: "projects_extra_not_null",
+            table_name: "accounts",
+            name: "accounts_password_not_null",
             type: "n",
-            definition: "NOT NULL extra",
-            column_name: "extra",
+            definition: "NOT NULL password",
+            column_name: "password",
           },
         ],
       },
-      "constraints: exactly one NOT NULL constraint for each of the 14 columns",
+      NOT_NULL_LABEL,
     ],
     [
-      "a missing CHECK",
-      {
-        constraints: constraints.filter(
-          (c) => c.name !== "specifications_status_check",
-        ),
-      },
-      "constraints: primary keys, UNIQUE, CHECK, and the RESTRICT foreign key as reviewed",
-    ],
-    [
-      "an ascending index",
+      "an ascending specifications index",
       {
         indexes: indexes.map((x) =>
           x.name === "specifications_updated_at_key_idx"
@@ -608,7 +960,41 @@ describe("the post phase", () => {
             : x,
         ),
       },
-      "indexes: exactly the six reviewed indexes, with updated_at DESC",
+      INDEXES_LABEL,
+    ],
+    [
+      "a hash index on sessions.user_id",
+      {
+        indexes: indexes.map((x) =>
+          x.name === "sessions_user_id_idx"
+            ? {
+                ...x,
+                definition:
+                  "CREATE INDEX sessions_user_id_idx ON public.sessions USING hash (user_id)",
+              }
+            : x,
+        ),
+      },
+      INDEXES_LABEL,
+    ],
+    [
+      "a partial index on verifications",
+      {
+        indexes: indexes.map((x) =>
+          x.name === "verifications_identifier_idx"
+            ? {
+                ...x,
+                definition: `${x.definition as string} WHERE (expires_at > now())`,
+              }
+            : x,
+        ),
+      },
+      INDEXES_LABEL,
+    ],
+    [
+      "a missing index",
+      { indexes: indexes.filter((x) => x.name !== "accounts_user_id_idx") },
+      INDEXES_LABEL,
     ],
     [
       "a trigger",
@@ -618,16 +1004,47 @@ describe("the post phase", () => {
     [
       "TRUNCATE for the app",
       { grants: grants.map((g) => ({ ...g, app_other: true })) },
-      "grants: ai_spec_studio_app has exactly SELECT, INSERT, UPDATE, DELETE on both tables",
+      APP_GRANTS_LABEL,
     ],
     [
-      "a missing app grant",
-      { grants: [{ ...grants[0], app_delete: false }, grants[1]] },
-      "grants: ai_spec_studio_app has exactly SELECT, INSERT, UPDATE, DELETE on both tables",
+      "a missing app grant on sessions",
+      {
+        grants: grants.map((g) =>
+          g.table_name === "sessions" ? { ...g, app_update: false } : g,
+        ),
+      },
+      APP_GRANTS_LABEL,
     ],
     [
-      "a PUBLIC grant",
-      { grants: grants.map((g) => ({ ...g, public_any: true })) },
+      "a table missing from the grants (to_regclass found nothing)",
+      {
+        grants: grants.map((g) =>
+          g.table_name === "accounts"
+            ? {
+                ...g,
+                app_select: null,
+                app_insert: null,
+                app_update: null,
+                app_delete: null,
+                app_other: null,
+                test_any: null,
+                public_any: null,
+              }
+            : g,
+        ),
+      },
+      [
+        APP_GRANTS_LABEL,
+        "grants: ai_spec_studio_test and PUBLIC have no table privileges",
+      ],
+    ],
+    [
+      "a test-role grant on users",
+      {
+        grants: grants.map((g) =>
+          g.table_name === "users" ? { ...g, test_any: true } : g,
+        ),
+      },
       "grants: ai_spec_studio_test and PUBLIC have no table privileges",
     ],
     [
@@ -640,37 +1057,28 @@ describe("the post phase", () => {
       { journal_access: [{ ...access, table_owner: "postgres" }] },
       "journal: drizzle schema and __drizzle_migrations owned by ai_spec_studio_migrator",
     ],
-    [
-      "an empty journal",
-      { journal: [] },
-      "journal: exactly one applied migration, with the hash and timestamp of 0000_initial_schema",
-    ],
-    [
-      "two journal rows",
-      { journal: [...(POST.journal as Rows), ...(POST.journal as Rows)] },
-      "journal: exactly one applied migration, with the hash and timestamp of 0000_initial_schema",
-    ],
-    [
-      "a different hash",
-      { journal: [{ hash: "0".repeat(64), created_at: "1794739919891" }] },
-      "journal: exactly one applied migration, with the hash and timestamp of 0000_initial_schema",
-    ],
-    [
-      "a missing drizzle schema",
-      { schemas: [{ name: "public" }] },
-      "database: the only non-system schemas are drizzle and public",
-    ],
   ])("fails on %s", async (_, override, label) => {
     const { results } = await run("post", {
-      ...POST,
+      ...DEV_APPLIED,
       ...(override as Answers),
     });
-    expect(failed(results)).toEqual([label]);
+    expect(failed(results)).toEqual([label].flat());
   });
 
-  test("a missing journal table is reported by SQLSTATE, and the pool still closes", async () => {
+  test("a missing drizzle schema makes the state unexpected", async () => {
+    const { results } = await run("post", {
+      ...DEV_APPLIED,
+      schemas: [{ name: "public" }],
+    });
+    expect(failed(results)).toEqual([
+      "database: the only non-system schemas are drizzle and public",
+      "state: every approved migration is applied (0000_initial_schema, 0001_auth_tables)",
+    ]);
+  });
+
+  test("a failing journal query is reported by SQLSTATE, and the pool still closes", async () => {
     const { results, state, output } = await run("post", {
-      ...POST,
+      ...DEV_APPLIED,
       journal: Object.assign(
         new Error(`relation does not exist in ${MIGRATION_URL}`),
         { code: "42P01" },
@@ -687,7 +1095,7 @@ describe("the post phase", () => {
 
 describe("connection errors", () => {
   test("a failed login prints only its SQLSTATE", async () => {
-    const { results, state, output } = await run("pre", PRE, {
+    const { results, state, output } = await run("pre", DEV_FRESH, {
       connectError: Object.assign(
         new Error(`password authentication failed: ${PASSWORD}`),
         { code: "28P01" },
@@ -720,6 +1128,13 @@ describe("the SQL", () => {
     expect(code).not.toMatch(
       /\b(INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP|TRUNCATE|GRANT|REVOKE|COPY|CALL|DO|SET|RESET|LOCK|VACUUM|ANALYZE|REINDEX|CLUSTER|REFRESH|COMMENT|SECURITY|nextval|setval|pg_terminate|pg_cancel|pg_reload|set_config|lo_)\b/i,
     );
+  });
+
+  test("the grants query takes the table names as a parameter, never in its text", () => {
+    expect(QUERIES.grants).toContain("unnest($3::text[])");
+    for (const table of expectedStructure(2).tables) {
+      expect(QUERIES.grants).not.toContain(table);
+    }
   });
 });
 
@@ -759,6 +1174,7 @@ describe("ORDER BY clauses", () => {
       "tables",
       "constraints",
       "indexes",
+      "grants",
     ] as const) {
       expect(orderByItems(QUERIES[name]).length).toBeGreaterThan(0);
       for (const item of orderByItems(QUERIES[name])) {
@@ -775,25 +1191,33 @@ describe("ORDER BY clauses", () => {
 });
 
 // Regression (Step 4C-3A): on PostgreSQL 18, pg_constraint also holds one
-// NOT NULL row (contype 'n') per column, so the catalog returns 22 rows, not
-// the 8 approved constraints. compareConstraints is the exact logic the post
-// check and the diagnostic use.
+// NOT NULL row (contype 'n') per NOT NULL column. compareConstraints is the
+// exact logic the post check and the diagnostic use.
 describe("compareConstraints", () => {
-  const rows = POST.constraints as Rows as ConstraintRow[];
+  const rows = DEV_APPLIED.constraints as Rows as ConstraintRow[];
 
-  test("accepts the PostgreSQL 18 catalog: 8 approved constraints plus 14 NOT NULL", () => {
-    expect(rows).toHaveLength(22);
+  test("accepts the PostgreSQL 18 catalog: 18 approved constraints plus 38 NOT NULL", () => {
+    expect(rows).toHaveLength(56);
     const result = compareConstraints(rows);
     expect(result.approved).toBe(true);
     expect(result.notNull).toBe(true);
     expect(result.entries.map((e) => e.status)).toEqual(
-      Array(22).fill("expected"),
+      Array(56).fill("expected"),
     );
   });
 
-  test("the approved check is unchanged: the 8 rows alone still pass it", () => {
+  test("after 0000 only, the original rules apply unchanged: 8 constraints plus 14 NOT NULL", () => {
+    const initial = pg18Constraints(1) as ConstraintRow[];
+    expect(initial).toHaveLength(22);
+    const result = compareConstraints(initial, expectedStructure(1));
+    expect(result.approved && result.notNull).toBe(true);
+    // ...and the full list rejects that catalog: the auth tables are missing.
+    expect(compareConstraints(initial).approved).toBe(false);
+  });
+
+  test("the approved check alone: the 18 rows still pass it", () => {
     const approvedOnly = rows.filter((row) => row.type !== "n");
-    expect(approvedOnly).toHaveLength(8);
+    expect(approvedOnly).toHaveLength(18);
     expect(compareConstraints(approvedOnly).approved).toBe(true);
     expect(compareConstraints(approvedOnly).notNull).toBe(false);
   });
@@ -802,8 +1226,8 @@ describe("compareConstraints", () => {
     const result = compareConstraints([
       ...rows,
       {
-        table_name: "projects",
-        name: "projects_zz_check",
+        table_name: "users",
+        name: "users_zz_check",
         type: "c",
         definition: "CHECK (true)",
         column_name: null,
@@ -811,38 +1235,39 @@ describe("compareConstraints", () => {
     ]);
     expect(result.approved).toBe(false);
     expect(
-      result.entries.find((e) => e.name === "projects_zz_check")?.status,
+      result.entries.find((e) => e.name === "users_zz_check")?.status,
     ).toBe("unexpected");
   });
 
-  test("a changed definition is a mismatch", () => {
+  test.each([
+    [
+      "specifications_project_id_fkey",
+      "FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE",
+    ],
+    [
+      "sessions_user_id_fkey",
+      "FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL",
+    ],
+    ["accounts_password_null_check", "CHECK ((password IS NOT NULL))"],
+  ])("a changed definition of %s is a mismatch", (name, definition) => {
     const result = compareConstraints(
-      rows.map((row) =>
-        row.name === "specifications_project_id_fkey"
-          ? {
-              ...row,
-              definition:
-                "FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE",
-            }
-          : row,
-      ),
+      rows.map((row) => (row.name === name ? { ...row, definition } : row)),
     );
     expect(result.approved).toBe(false);
-    expect(
-      result.entries.find((e) => e.name === "specifications_project_id_fkey")
-        ?.status,
-    ).toBe("mismatch");
+    expect(result.entries.find((e) => e.name === name)?.status).toBe(
+      "mismatch",
+    );
   });
 
   test("a wrong constraint type is a mismatch", () => {
     const result = compareConstraints(
       rows.map((row) =>
-        row.name === "projects_slug_unique" ? { ...row, type: "x" } : row,
+        row.name === "users_email_unique" ? { ...row, type: "x" } : row,
       ),
     );
     expect(result.approved).toBe(false);
     expect(
-      result.entries.find((e) => e.name === "projects_slug_unique")?.status,
+      result.entries.find((e) => e.name === "users_email_unique")?.status,
     ).toBe("mismatch");
   });
 
@@ -850,7 +1275,9 @@ describe("compareConstraints", () => {
     const result = compareConstraints(
       rows.filter(
         (row) =>
-          row.name !== "projects_pkey" && row.name !== "projects_slug_not_null",
+          row.name !== "projects_pkey" &&
+          row.name !== "projects_slug_not_null" &&
+          row.name !== "sessions_token_unique",
       ),
     );
     expect(result.approved).toBe(false);
@@ -859,7 +1286,11 @@ describe("compareConstraints", () => {
       result.entries
         .filter((e) => e.status === "missing")
         .map((e) => `${e.table}.${e.name}`),
-    ).toEqual(["projects.projects_pkey", "projects.NOT NULL slug"]);
+    ).toEqual([
+      "projects.projects_pkey",
+      "sessions.sessions_token_unique",
+      "projects.NOT NULL slug",
+    ]);
   });
 
   test("a duplicated NOT NULL row fails", () => {
@@ -876,7 +1307,7 @@ describe("compareConstraints", () => {
     expect(
       compareConstraints(
         rows.map((row) =>
-          row.name === "projects_id_not_null"
+          row.name === "users_id_not_null"
             ? { ...row, column_name: null }
             : row,
         ),
@@ -892,21 +1323,24 @@ describe("compareConstraints", () => {
 
 describe("the constraints diagnostic", () => {
   test("lists every stored constraint with its definition, then both verdicts", async () => {
-    const { results, output, state } = await run("constraints", POST);
+    const { results, output, state } = await run("constraints", DEV_APPLIED);
     expect(failed(results)).toEqual([]);
     const lines = results.filter((r) => r.label.startsWith("constraint "));
-    expect(lines).toHaveLength(22);
-    expect(output).toMatch(/ALL 43 CHECKS PASSED$/);
+    expect(lines).toHaveLength(56);
+    expect(output).toMatch(/ALL 83 CHECKS PASSED$/);
     expect(lines[0]).toEqual({
       pass: true,
-      label: "constraint projects.projects_created_at_not_null [n]: expected",
-      detail: "NOT NULL created_at",
+      label: "constraint accounts.accounts_account_id_not_null [n]: expected",
+      detail: "NOT NULL account_id",
     });
     expect(output).toContain(
       "PASS  constraint specifications.specifications_project_id_fkey [f]: expected\n      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE RESTRICT",
     );
     expect(output).toContain(
-      "PASS  constraints: exactly one NOT NULL constraint for each of the 14 columns",
+      "PASS  constraint accounts.accounts_user_id_fkey [f]: expected\n      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE",
+    );
+    expect(output).toContain(
+      "PASS  constraints: exactly one NOT NULL constraint for each of the 38 NOT NULL columns",
     );
     expect(state.calls[0]?.text).toBe("BEGIN TRANSACTION READ ONLY");
     expect(state.calls.at(-1)?.text).toBe("ROLLBACK");
@@ -920,7 +1354,7 @@ describe("the constraints diagnostic", () => {
   });
 
   test("marks mismatched, unexpected, and missing constraints as FAIL", async () => {
-    const stored = (POST.constraints as Rows)
+    const stored = (DEV_APPLIED.constraints as Rows)
       .filter((row) => row.name !== "specifications_key_unique")
       .map((row) =>
         row.name === "specifications_status_check"
@@ -935,7 +1369,7 @@ describe("the constraints diagnostic", () => {
       column_name: null,
     });
     const { results } = await run("constraints", {
-      ...POST,
+      ...DEV_APPLIED,
       constraints: stored,
     });
     expect(results.filter((r) => !r.pass)).toEqual([
@@ -958,13 +1392,13 @@ describe("the constraints diagnostic", () => {
       {
         pass: false,
         label:
-          "constraints: primary keys, UNIQUE, CHECK, and the RESTRICT foreign key as reviewed",
+          "constraints: exactly the 18 reviewed primary key, UNIQUE, CHECK, and foreign key constraints",
       },
     ]);
   });
 
   test("still fails closed before connecting", async () => {
-    const { state, results } = await run("constraints", POST, {
+    const { state, results } = await run("constraints", DEV_APPLIED, {
       env: { ...ENV, PGHOST: "FakeHost" },
     });
     expect(state.created).toBe(0);
@@ -974,9 +1408,11 @@ describe("the constraints diagnostic", () => {
   });
 });
 
-// Regression (Step 5B-1): the development profile's results, captured from
-// the code before the profile refactor, must stay exactly the same: every
-// label, detail, and pass/fail, in order.
+// Regression baseline: the development checks' results, label by label, in
+// order. Re-captured in Task 1.2.3 Phase 3D, when the checks moved from one
+// migration to the ordered list of approved migrations (the Step 5B-1
+// baseline it replaces covered 0000_initial_schema alone). A change to any
+// label, detail, or verdict must be deliberate and reviewed.
 describe("the development profile is unchanged", () => {
   const baseline = JSON.parse(
     readFileSync(
@@ -986,27 +1422,29 @@ describe("the development profile is unchanged", () => {
   ) as Record<string, CheckResult[]>;
 
   test.each([
-    ["pre", () => run("pre", PRE)],
-    ["post", () => run("post", POST)],
-    ["constraints", () => run("constraints", POST)],
+    ["pre-fresh", () => run("pre", DEV_FRESH)],
+    ["pre-partial", () => run("pre", DEV_PARTIAL)],
+    ["post", () => run("post", DEV_APPLIED)],
+    ["constraints", () => run("constraints", DEV_APPLIED)],
     [
       "pre-failing",
       () =>
         run("pre", {
-          ...PRE,
+          ...DEV_PARTIAL,
           regex: regexRows([10, 22]),
           sessions: [{ other_migrator_sessions: 1 }],
         }),
     ],
-    ["closed", () => run("pre", PRE, { env: { ...ENV, PGHOST: "x" } })],
+    ["closed", () => run("pre", DEV_FRESH, { env: { ...ENV, PGHOST: "x" } })],
   ] as const)("%s", async (name, execute) => {
     const { results } = await execute();
     expect(results).toEqual(baseline[name]);
   });
 
   test("the baseline has the approved counts", () => {
-    expect(baseline.pre).toHaveLength(27);
-    expect(baseline.post).toHaveLength(30);
-    expect(baseline.constraints).toHaveLength(43);
+    expect(baseline["pre-fresh"]).toHaveLength(32);
+    expect(baseline["pre-partial"]).toHaveLength(42);
+    expect(baseline.post).toHaveLength(36);
+    expect(baseline.constraints).toHaveLength(83);
   });
 });

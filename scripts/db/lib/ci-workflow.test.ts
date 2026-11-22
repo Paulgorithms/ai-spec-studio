@@ -817,7 +817,8 @@ describe("the migration and integration-test steps", () => {
 // A Vitest 5 JSON report, shaped as its JsonReporter writes it.
 function report(
   overrides: Record<string, unknown> = {},
-  testsPerFile = [8, 57],
+  // The repository's integration files: pool, schema, auth schema, Better Auth.
+  testsPerFile = [8, 57, 29, 16],
 ) {
   const testResults = testsPerFile.map((count, f) => ({
     assertionResults: Array.from({ length: count }, (_, t) => ({
@@ -864,28 +865,32 @@ describe("the integration result check (run on Vitest-shaped reports)", () => {
     return runStep(runOf("Check the integration test results"));
   };
 
-  test("passes 65 of 65 passed tests and prints counts only", () => {
+  test("passes 110 of 110 passed tests and prints counts only", () => {
     const result = check(report());
     expect(result.stdout).toBe(
-      "PASS  integration tests: 65 of 65 passed in 2 files\n",
+      "PASS  integration tests: 110 of 110 passed in 4 files\n",
     );
     expect(result.status).toBe(0);
   });
 
-  test("passes more than 65", () => {
-    expect(check(report({}, [8, 60])).stdout).toBe(
-      "PASS  integration tests: 68 of 68 passed in 2 files\n",
+  test("passes more than 110", () => {
+    expect(check(report({}, [8, 57, 29, 19])).stdout).toBe(
+      "PASS  integration tests: 113 of 113 passed in 4 files\n",
     );
   });
 
   const failing: Array<[string, () => unknown, string]> = [
-    ["fewer than 65 tests", () => report({}, [8, 56]), "FEWER_THAN_65_TESTS"],
+    [
+      "fewer than 110 tests",
+      () => report({}, [8, 57, 29, 15]),
+      "FEWER_THAN_110_TESTS",
+    ],
     [
       "a failed test",
       () => {
         const r = report({
           numFailedTests: 1,
-          numPassedTests: 64,
+          numPassedTests: 109,
           success: false,
         });
         r.testResults[1]!.assertionResults[0]!.status = "failed";
@@ -897,7 +902,7 @@ describe("the integration result check (run on Vitest-shaped reports)", () => {
     [
       "a skipped test (counted as pending)",
       () => {
-        const r = report({ numPendingTests: 1, numPassedTests: 64 });
+        const r = report({ numPendingTests: 1, numPassedTests: 109 });
         r.testResults[0]!.assertionResults[0]!.status = "skipped";
         return r;
       },
@@ -906,7 +911,7 @@ describe("the integration result check (run on Vitest-shaped reports)", () => {
     [
       "a todo test",
       () => {
-        const r = report({ numTodoTests: 1, numPassedTests: 64 });
+        const r = report({ numTodoTests: 1, numPassedTests: 109 });
         r.testResults[0]!.assertionResults[0]!.status = "todo";
         return r;
       },
@@ -1004,7 +1009,11 @@ describe("the integration result check (run on Vitest-shaped reports)", () => {
   });
 
   test("never prints failure messages from the report", () => {
-    const r = report({ numFailedTests: 1, numPassedTests: 64, success: false });
+    const r = report({
+      numFailedTests: 1,
+      numPassedTests: 109,
+      success: false,
+    });
     r.testResults[1]!.assertionResults[0]!.status = "failed";
     (
       r.testResults[1]!.assertionResults[0] as { failureMessages: string[] }
@@ -1014,13 +1023,33 @@ describe("the integration result check (run on Vitest-shaped reports)", () => {
     expect(result.stdout + result.stderr).not.toContain("postgresql://");
   });
 
-  test("requires the count the repository actually has: at least 65 integration test cases", () => {
-    const files = readdirSync("src/lib/db").filter((f) =>
-      f.endsWith(".integration.test.ts"),
-    );
+  test("requires the count the repository actually has: at least 110 integration test cases", () => {
+    // Every file the integration project collects (src/**/*.integration.test.ts).
+    const files = (
+      readdirSync("src", { recursive: true, encoding: "utf8" }) as string[]
+    )
+      .filter((f) => f.endsWith(".integration.test.ts"))
+      .sort();
+    expect(files).toEqual([
+      "lib/auth/auth.integration.test.ts",
+      "lib/db/auth-schema.integration.test.ts",
+      "lib/db/pool.integration.test.ts",
+      "lib/db/schema.integration.test.ts",
+    ]);
     let total = 0;
     for (const file of files) {
-      const source = readFileSync(`src/lib/db/${file}`, "utf8");
+      const source = readFileSync(`src/${file}`, "utf8");
+      // Only plain test(...) and test.each([...]) are counted below; any
+      // other way of declaring tests would be miscounted, so it is refused.
+      expect(source, file).not.toMatch(
+        /\b(it|test)\.(each|for|concurrent|skip|only|todo|skipIf|runIf)\s*\(\s*[^[\s]/,
+      );
+      expect(source, file).not.toMatch(
+        /\b(test|it)\.(for|concurrent|skip|only|todo|skipIf|runIf)\b/,
+      );
+      expect(source, file).not.toMatch(
+        /\bdescribe\.each\b|\bforEach\([^)]*=>\s*\{?\s*test\(/,
+      );
       total += (source.match(/^\s*(test|it)\(/gm) ?? []).length;
       // test.each([...]) rows: one per top-level element of the array.
       for (const m of source.matchAll(/test\.each\(\s*\[/g)) {
@@ -1058,9 +1087,9 @@ describe("the integration result check (run on Vitest-shaped reports)", () => {
         total += items;
       }
     }
-    expect(total).toBe(65);
+    expect(total).toBe(110);
     expect(runOf("Check the integration test results")).toContain(
-      'if (total < 65) problems.push("FEWER_THAN_65_TESTS");',
+      'if (total < 110) problems.push("FEWER_THAN_110_TESTS");',
     );
   });
 });
@@ -1476,8 +1505,8 @@ describe("no GitHub expression in any run script of the job", () => {
     ],
     [
       "Check the integration test results",
-      'if (total < 65) problems.push("FEWER_THAN_65_TESTS");',
-      'if (total < ${{ github.run_number }}) problems.push("FEWER_THAN_65_TESTS");',
+      'if (total < 110) problems.push("FEWER_THAN_110_TESTS");',
+      'if (total < ${{ github.run_number }}) problems.push("FEWER_THAN_110_TESTS");',
     ],
     [
       "Clean up credentials and stop PostgreSQL",

@@ -225,7 +225,7 @@ jobs:
             if (count(report.numPendingTests) !== 0) problems.push("SKIPPED_OR_PENDING_TESTS");
             if (count(report.numTodoTests) !== 0) problems.push("TODO_TESTS");
             if (count(report.numFailedTestSuites) !== 0 || count(report.numPendingTestSuites) !== 0) problems.push("SUITES_NOT_PASSED");
-            if (total < 65) problems.push("FEWER_THAN_65_TESTS");
+            if (total < 110) problems.push("FEWER_THAN_110_TESTS");
             if (count(report.numPassedTests) !== total || tests.length !== total) problems.push("INCONSISTENT_TOTALS");
             if (tests.some((t) => t.status !== "passed")) problems.push("TEST_NOT_PASSED");
             if (files.length === 0 || files.some((f) => f.status !== "passed")) problems.push("FILE_NOT_PASSED");

@@ -25,14 +25,18 @@ import {
   type PoolFactory,
 } from "./live-verification";
 import {
-  APPROVED_MIGRATION,
+  APPROVED_MIGRATIONS,
   LOCAL_PORT,
   QUERIES,
   UNEXPECTED_VARIABLES,
+  appliedTags,
+  checkMigrationFiles,
   checkRegexCases,
-  checkSchemas,
   checkSessionIdentity,
   checkStructure,
+  expectedStructure,
+  pendingTags,
+  readDatabaseState,
   rows,
   type Check,
   type MigrationFiles,
@@ -246,24 +250,58 @@ SELECT pg_get_userbyid(n.nspowner)::text AS schema_owner,
 FROM pg_namespace AS n
 JOIN pg_class AS c ON c.relnamespace = n.oid AND c.relname = '__drizzle_migrations'
 WHERE n.nspname = 'drizzle'`,
-  rowCounts: `/* row_counts */
-SELECT (SELECT count(*)::int FROM public.projects) AS projects,
-       (SELECT count(*)::int FROM public.specifications) AS specifications`,
+  // $3 is the list of table names (from APPROVED_MIGRATIONS). A table that
+  // doesn't exist gives NULLs (to_regclass), which fail the check.
   foreignGrants: `/* foreign_grants */
-SELECT t.name AS table_name,
-       has_table_privilege($1::name, t.qualified, 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER') AS app_any,
-       has_table_privilege($2::name, t.qualified, 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER') AS migrator_any,
-       has_table_privilege('public', t.qualified, 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER') AS public_any
-FROM (VALUES ('projects', 'public.projects'), ('specifications', 'public.specifications'))
-  AS t (name, qualified)
-ORDER BY 1`,
+SELECT t.name::text AS table_name,
+       has_table_privilege($1::name, t.oid, 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER') AS app_any,
+       has_table_privilege($2::name, t.oid, 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER') AS migrator_any,
+       has_table_privilege('public', t.oid, 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER') AS public_any
+FROM (SELECT u.name, to_regclass('public.' || quote_ident(u.name))::oid AS oid
+      FROM unnest($3::text[]) AS u (name)) AS t
+ORDER BY t.name::text COLLATE "C"`,
 } as const;
 
-export type TestDatabaseState = "fresh" | "applied" | "unexpected";
+// Row counts for the given tables, one column per table, named after it.
+// Identifiers can't be parameters, so the names (always from
+// APPROVED_MIGRATIONS) must be plain lowercase identifiers, quoted anyway.
+export function rowCountsQuery(tables: readonly string[]): string {
+  if (
+    tables.length === 0 ||
+    !tables.every((table) => /^[a-z][a-z0-9_]{0,62}$/.test(table))
+  ) {
+    throw new TypeError("rowCountsQuery takes approved table names only.");
+  }
+  const counts = tables.map(
+    (table) => `(SELECT count(*)::int FROM public."${table}") AS "${table}"`,
+  );
+  return `/* row_counts */\nSELECT ${counts.join(",\n       ")}`;
+}
+
+// Every table empty, and the detail that names each table's count.
+export function emptyTables(
+  counts: Record<string, unknown>,
+  tables: readonly string[],
+): { empty: boolean; detail: string } {
+  return {
+    empty: tables.every((table) => counts[table] === 0),
+    detail: `(${tables
+      .map((table) => `${table}: ${Number(counts[table])}`)
+      .join(", ")})`,
+  };
+}
+
+// fresh       nothing migrated yet
+// partial     exactly the first approved migrations, at least one pending
+// applied     every approved migration, exactly
+// unexpected  anything else (refused by every tool)
+export type TestDatabaseState = "fresh" | "partial" | "applied" | "unexpected";
 
 export type PreflightOutcome = {
   results: CheckResult[];
   state: TestDatabaseState | undefined;
+  // How many approved migrations are applied (fresh: 0), when known.
+  applied?: number;
 };
 
 export async function runTestDatabasePreflight(
@@ -277,14 +315,7 @@ export async function runTestDatabasePreflight(
       detail === undefined ? { pass, label } : { pass, label, detail },
     );
 
-  check(
-    files.journalEntries === 1 && files.tag === APPROVED_MIGRATION.tag,
-    `files: the journal has exactly one entry, ${APPROVED_MIGRATION.tag}`,
-  );
-  check(
-    files.sha256 === APPROVED_MIGRATION.sha256,
-    `files: ${APPROVED_MIGRATION.tag}.sql matches the reviewed SHA-256`,
-  );
+  checkMigrationFiles(files, check);
   const connection = checkTestDatabaseConfiguration(env, check);
   if (results.some((result) => !result.pass) || !connection) {
     check(false, "connection skipped (a check above failed)");
@@ -301,7 +332,7 @@ export async function runTestDatabasePreflight(
     return { results, state: undefined };
   }
 
-  let state: TestDatabaseState | undefined;
+  let outcome: TestDatabaseCheck | undefined;
   let pool: Pool | undefined;
   let client: PoolClient | undefined;
   try {
@@ -313,13 +344,13 @@ export async function runTestDatabasePreflight(
     check(true, "connected as the test role");
     await client.query(QUERIES.begin);
     try {
-      state = await checkTestDatabase(client, files, check);
+      outcome = await checkTestDatabase(client, check);
     } finally {
       await client.query(QUERIES.rollback);
     }
   } catch (error) {
     check(false, "checks could not finish", `(${errorKind(error)})`);
-    state = undefined;
+    outcome = undefined;
   } finally {
     try {
       client?.release();
@@ -335,21 +366,73 @@ export async function runTestDatabasePreflight(
       }
     }
   }
-  return { results, state };
+  return outcome
+    ? { results, state: outcome.state, applied: outcome.applied }
+    : { results, state: undefined };
+}
+
+export type TestDatabaseCheck = {
+  state: TestDatabaseState;
+  // Approved migrations applied (fresh: 0); undefined when unexpected.
+  applied: number | undefined;
+};
+
+// The test database after `applied` migrations: the structure owned by the
+// test role, its journal, no grants to other roles, and no rows left behind.
+async function checkTestDatabaseMigrated(
+  client: PoolClient,
+  applied: number,
+  check: Check,
+) {
+  const role = TEST_PROFILE.role;
+  const structure = expectedStructure(applied);
+  check(
+    true,
+    `journal: exactly ${applied} applied migration${applied === 1 ? "" : "s"}, in order, with the reviewed hashes and timestamps (${appliedTags(applied)})`,
+  );
+  const owner = (await rows(client, TEST_QUERIES.journalOwner))[0];
+  check(
+    owner?.schema_owner === role && owner.table_owner === role,
+    `journal: drizzle schema and __drizzle_migrations owned by ${role}`,
+  );
+  await checkStructure(client, role, structure, check);
+  const grants = await rows(client, TEST_QUERIES.foreignGrants, [
+    ...OTHER_PROJECT_ROLES,
+    [...structure.tables],
+  ]);
+  check(
+    JSON.stringify(grants.map((row) => row.table_name)) ===
+      JSON.stringify(structure.tables) &&
+      grants.every(
+        (row) =>
+          row.app_any === false &&
+          row.migrator_any === false &&
+          row.public_any === false,
+      ),
+    "grants: the app role, the migrator, and PUBLIC have no table privileges",
+  );
+  const counts =
+    (await rows(client, rowCountsQuery(structure.tables)))[0] ?? {};
+  const { empty, detail } = emptyTables(counts, structure.tables);
+  check(
+    empty,
+    `state: all ${structure.tables.length} tables are empty (nothing left by earlier runs)`,
+    empty ? undefined : detail,
+  );
 }
 
 // The connected checks, on one client inside a read-only transaction the
 // caller opened. `lockHeldBySelf` is for a session that holds the
-// test-database lock (the migration runner): the lock check then requires
-// that this session, and no other, holds it.
+// test-database lock (the migration runner, the integration run): the lock
+// check then requires that this session, and no other, holds it.
 export async function checkTestDatabase(
   client: PoolClient,
-  files: MigrationFiles,
   check: Check,
   options: { lockHeldBySelf?: boolean } = {},
-): Promise<TestDatabaseState> {
+): Promise<TestDatabaseCheck> {
   const role = TEST_PROFILE.role;
   const database = TEST_PROFILE.database;
+  const total = APPROVED_MIGRATIONS.length;
 
   await checkSessionIdentity(client, TEST_PROFILE, check);
 
@@ -369,96 +452,40 @@ export async function checkTestDatabase(
     "privileges: USAGE and CREATE on schema public",
   );
 
-  // State: fresh, exactly the approved migration, or anything else.
-  const objects = (await rows(client, QUERIES.objects))[0] ?? {};
-  const schemaRows = (await rows(client, QUERIES.schemas)).map(
-    (row) => row.name,
-  );
-  const hasDrizzle = schemaRows.includes("drizzle");
-  const fresh =
-    !hasDrizzle &&
-    objects.journal === false &&
-    objects.projects === false &&
-    objects.specifications === false &&
-    objects.public_relations === 0;
-  const looksApplied =
-    hasDrizzle &&
-    objects.journal === true &&
-    objects.projects === true &&
-    objects.specifications === true;
-
-  await checkSchemas(
-    client,
-    TEST_PROFILE,
-    fresh ? ["public"] : ["drizzle", "public"],
-    check,
-  );
-
-  let state: TestDatabaseState;
-  if (fresh) {
+  const found = await readDatabaseState(client, TEST_PROFILE, check);
+  let result: TestDatabaseCheck;
+  if (found.kind === "fresh") {
     check(
       true,
       "state: fresh (no drizzle schema, no migration journal, schema public empty)",
     );
-    state = "fresh";
-  } else if (looksApplied) {
-    // Every check in this branch must pass for the "applied exactly" verdict.
-    let appliedOk = true;
+    result = { state: "fresh", applied: 0 };
+  } else if (found.kind === "migrated") {
+    // Every check in this branch must pass for a migrated verdict.
+    let exact = true;
     const tracked: Check = (pass, label, detail) => {
-      if (!pass) appliedOk = false;
+      if (!pass) exact = false;
       check(pass, label, detail);
     };
-    const journal = await rows(client, QUERIES.journal);
-    tracked(
-      journal.length === 1 &&
-        journal[0]?.hash === files.sha256 &&
-        journal[0]?.created_at === String(files.when),
-      `journal: exactly one applied migration, with the hash and timestamp of ${APPROVED_MIGRATION.tag}`,
-    );
-    const owner = (await rows(client, TEST_QUERIES.journalOwner))[0];
-    tracked(
-      owner?.schema_owner === role && owner.table_owner === role,
-      `journal: drizzle schema and __drizzle_migrations owned by ${role}`,
-    );
-    await checkStructure(client, role, tracked);
-    const grants = await rows(client, TEST_QUERIES.foreignGrants, [
-      ...OTHER_PROJECT_ROLES,
-    ]);
-    tracked(
-      grants.length === 2 &&
-        grants.every(
-          (row) =>
-            row.app_any === false &&
-            row.migrator_any === false &&
-            row.public_any === false,
-        ),
-      "grants: the app role, the migrator, and PUBLIC have no table privileges",
-    );
-    const counts = (await rows(client, TEST_QUERIES.rowCounts))[0] ?? {};
-    tracked(
-      counts.projects === 0 && counts.specifications === 0,
-      "state: both tables are empty (nothing left by earlier runs)",
-    );
-    check(
-      appliedOk,
-      "state: the approved migration is applied exactly",
-      appliedOk ? undefined : "(see the failures above)",
-    );
-    state = appliedOk ? "applied" : "unexpected";
+    await checkTestDatabaseMigrated(client, found.applied, tracked);
+    const label =
+      found.applied === total
+        ? `state: every approved migration is applied exactly (${appliedTags(total)})`
+        : `state: partially migrated, exactly as reviewed (applied: ${appliedTags(found.applied)}; pending: ${pendingTags(found.applied)})`;
+    check(exact, label, exact ? undefined : "(see the failures above)");
+    result = exact
+      ? {
+          state: found.applied === total ? "applied" : "partial",
+          applied: found.applied,
+        }
+      : { state: "unexpected", applied: undefined };
   } else {
-    const codes = [
-      hasDrizzle ? "DRIZZLE_SCHEMA" : "NO_DRIZZLE_SCHEMA",
-      objects.journal === true ? "JOURNAL" : "NO_JOURNAL",
-      objects.projects === true ? "PROJECTS" : "NO_PROJECTS",
-      objects.specifications === true ? "SPECIFICATIONS" : "NO_SPECIFICATIONS",
-      objects.public_relations === 0 ? "PUBLIC_EMPTY" : "PUBLIC_NOT_EMPTY",
-    ];
     check(
       false,
-      "state: neither fresh nor exactly the approved migration (partial or unexpected)",
-      `(${codes.join(", ")})`,
+      "state: neither fresh nor exactly the first approved migrations, in order",
+      `(${found.codes.join(", ")})`,
     );
-    state = "unexpected";
+    result = { state: "unexpected", applied: undefined };
   }
 
   const sessions = (await rows(client, QUERIES.sessions))[0] ?? {};
@@ -484,5 +511,5 @@ export async function checkTestDatabase(
   }
 
   await checkRegexCases(client, check);
-  return state;
+  return result;
 }

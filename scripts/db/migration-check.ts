@@ -1,4 +1,5 @@
-// Read-only checks before and after the first migration (Step 4B-S).
+// Read-only checks before and after the development migrations (Step 4B-S;
+// every approved migration, in order, since Task 1.2.3 Phase 3D).
 // Run them yourself from the project root:
 //
 //   ./node_modules/.bin/tsx scripts/db/migration-check.ts pre
@@ -14,8 +15,6 @@
 // codes. Never prints URLs, passwords, or driver messages, and never writes
 // to the database.
 // Exit code: 0 when every check passes, 1 when any fails, 2 for bad usage.
-import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { Pool } from "pg";
 import { errorKind, formatResults } from "./lib/live-verification";
 import { loadLocalEnv } from "./lib/local-env";
@@ -24,27 +23,7 @@ import {
   type MigrationFiles,
   type Phase,
 } from "./lib/migration-checks";
-
-// The migration as the drizzle-orm migrator reads it: the first journal
-// entry, and the SHA-256 of its whole SQL file.
-function readMigrationFiles(): MigrationFiles {
-  const journal = JSON.parse(
-    readFileSync("drizzle/meta/_journal.json", "utf8"),
-  ) as { entries?: Array<{ tag?: unknown; when?: unknown }> };
-  const entries = Array.isArray(journal.entries) ? journal.entries : [];
-  const first = entries[0];
-  const tag = typeof first?.tag === "string" ? first.tag : "";
-  const when = typeof first?.when === "number" ? first.when : Number.NaN;
-  const sql = /^[0-9a-z_]+$/.test(tag)
-    ? readFileSync(`drizzle/${tag}.sql`, "utf8")
-    : "";
-  return {
-    journalEntries: entries.length,
-    tag,
-    when,
-    sha256: createHash("sha256").update(sql).digest("hex"),
-  };
-}
+import { readMigrationFiles } from "./lib/migration-files";
 
 async function main(): Promise<number> {
   const phase = process.argv[2];

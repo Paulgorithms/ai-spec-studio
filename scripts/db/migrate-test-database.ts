@@ -1,4 +1,5 @@
-// Applies the approved migration to the local test database, once (Step 5B-3).
+// Applies the pending approved migrations to the local test database, in
+// order (Step 5B-3; the ordered migration list since Task 1.2.3 Phase 3D).
 // Run it yourself from the project root, after the read-only preflight:
 //
 //   npm run db:migrate:test
