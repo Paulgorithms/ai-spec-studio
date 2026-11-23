@@ -17,9 +17,24 @@
 import { sql } from "drizzle-orm";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PoolClient } from "pg";
-import { projects, specifications } from "../schema";
+import {
+  accounts,
+  projects,
+  sessions,
+  specifications,
+  users,
+  verifications,
+} from "../schema";
 
-const schema = { projects, specifications };
+// Every table of the approved migrations.
+const schema = {
+  projects,
+  specifications,
+  users,
+  sessions,
+  accounts,
+  verifications,
+};
 
 export type TestDatabase = NodePgDatabase<typeof schema>;
 export type TestTransaction = Parameters<

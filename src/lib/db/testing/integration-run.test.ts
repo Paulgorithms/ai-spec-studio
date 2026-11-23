@@ -2,12 +2,15 @@ import type { Pool, PoolConfig } from "pg";
 import { describe, expect, test } from "vitest";
 import {
   APPLIED,
+  BROKEN,
+  FILES,
   FRESH,
   PARTIAL,
+  journalRows,
+  rowCounts,
   type Answers,
 } from "../../../../scripts/db/lib/fixtures/test-database-answers";
 import {
-  APPROVED_MIGRATION,
   QUERIES,
   type MigrationFiles,
 } from "../../../../scripts/db/lib/migration-checks";
@@ -32,12 +35,6 @@ const ENV = {
   DATABASE_URL: DEV_URL,
   DATABASE_MIGRATION_URL: MIGRATION_URL,
   DATABASE_SSL_MODE: "disable",
-};
-const FILES: MigrationFiles = {
-  journalEntries: 1,
-  tag: APPROVED_MIGRATION.tag,
-  when: 1794739919891,
-  sha256: APPROVED_MIGRATION.sha256,
 };
 
 // One fake lock connection. Each BEGIN starts the next phase's answers:
@@ -79,6 +76,7 @@ async function start(
     env?: Record<string, string | undefined>;
     phases?: Answers[];
     lock?: { acquired?: unknown; released?: unknown };
+    files?: MigrationFiles;
   } = {},
 ) {
   const fake = {
@@ -109,7 +107,7 @@ async function start(
   const outcome = await startIntegrationRun(
     options.env ?? ENV,
     createPool,
-    FILES,
+    options.files ?? FILES,
   ).then(
     (run) => ({ run, error: undefined }),
     (error: unknown) => ({ run: undefined, error }),
@@ -184,10 +182,15 @@ describe("setup refuses to start", () => {
 
   test.each([
     ["a fresh (unmigrated) database", FRESH],
-    ["a partial migration", PARTIAL],
+    ["a partially migrated database (0001_auth_tables pending)", PARTIAL],
+    ["a broken migration state", BROKEN],
     [
       "rows left in a table",
-      { ...APPLIED, row_counts: [{ projects: 1, specifications: 0 }] },
+      { ...APPLIED, row_counts: rowCounts(2, { projects: 1 }) },
+    ],
+    [
+      "a session left in the auth tables",
+      { ...APPLIED, row_counts: rowCounts(2, { sessions: 1 }) },
     ],
     [
       "the development label",
@@ -207,11 +210,13 @@ describe("setup refuses to start", () => {
     const r = await start({
       phases: [
         APPLIED,
-        { ...APPLIED, row_counts: [{ projects: 0, specifications: 2 }] },
+        { ...APPLIED, row_counts: rowCounts(2, { verifications: 2 }) },
       ],
     });
     expect(r.error).toBeInstanceOf(IntegrationRunError);
-    expect(message(r.error)).toContain("locked: state: both tables are empty");
+    expect(message(r.error)).toContain(
+      "FAIL  locked: state: all 6 tables are empty",
+    );
     expect(r.lockCalls()).toEqual([LOCK_QUERIES.tryLock, LOCK_QUERIES.unlock]);
     expect(r.fake.ended).toBe(true);
   });
@@ -240,19 +245,40 @@ describe("setup refuses to start", () => {
   });
 });
 
+test("setup refuses modified migration files without connecting", async () => {
+  const r = await start({
+    files: {
+      ...FILES,
+      sha256: { ...FILES.sha256, "0001_auth_tables.sql": "0".repeat(64) },
+    },
+  });
+  expect(r.error).toBeInstanceOf(IntegrationRunError);
+  expect(r.fake.pools).toHaveLength(0);
+  expect(message(r.error)).toContain(
+    "FAIL  files: 0001_auth_tables.sql matches the reviewed SHA-256",
+  );
+});
+
 describe("teardown", () => {
   test("detects rows a test left behind, reports them, deletes nothing, and still cleans up", async () => {
     const r = await start({
       phases: [
         APPLIED,
         APPLIED,
-        { ...APPLIED, row_counts: [{ projects: 2, specifications: 1 }] },
+        {
+          ...APPLIED,
+          row_counts: rowCounts(2, {
+            projects: 2,
+            specifications: 1,
+            users: 3,
+          }),
+        },
       ],
     });
     const error = await r.run!.finish().catch((e: unknown) => e);
     expect(error).toBeInstanceOf(IntegrationRunError);
     expect(message(error)).toContain(
-      "FAIL  after: both tables are still empty (no test left rows behind)\n      (projects: 2, specifications: 1)",
+      "FAIL  after: all 6 tables are still empty (no test left rows behind)\n      (accounts: 0, projects: 2, sessions: 0, specifications: 1, users: 3, verifications: 0)",
     );
     expect(r.lockCalls()).toEqual([LOCK_QUERIES.tryLock, LOCK_QUERIES.unlock]);
     expect(r.client.releases).toBe(1);
@@ -277,6 +303,11 @@ describe("teardown", () => {
     [
       "a changed journal",
       { ...APPLIED, journal: [] },
+      "after: the migration journal is unchanged",
+    ],
+    [
+      "a journal missing 0001",
+      { ...APPLIED, journal: journalRows(1) },
       "after: the migration journal is unchanged",
     ],
   ])("fails on %s", async (_, teardown, label) => {

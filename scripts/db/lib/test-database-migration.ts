@@ -1,17 +1,23 @@
-// Applies the approved migration to the local test database (Step 5B-3).
+// Applies the pending approved migrations to the local test database, in
+// order (Step 5B-3; extended to the ordered migration list in Task 1.2.3
+// Phase 3D).
 //
 // One dedicated connection, as ai_spec_studio_test, does everything:
-//   1. before   read-only checks (as the preflight): target, server, role,
-//               label, privileges, state, concurrency, regex
+//   1. before   read-only checks (as the preflight): files, target, server,
+//               role, label, privileges, state, concurrency, regex
 //   2. lock     pg_try_advisory_lock on that same connection
 //   3. locked   the read-only checks again, while holding the lock
-//   4. migrate  only from the fresh state, with drizzle-orm's migrator bound to
-//               that same connection; the exact approved state is a no-op
-//   5. after    the read-only checks again: the approved state, exactly
+//   4. migrate  only from a verified state: fresh (nothing applied) or
+//               partial (exactly the first approved migrations), with
+//               drizzle-orm's migrator bound to that same connection. It
+//               applies every pending migration in ONE transaction, so a
+//               failure leaves the state as it was before. Every approved
+//               migration already applied is a no-op.
+//   5. after    the read-only checks again: every approved migration, exactly
 //   6. unlock, release the client, end the pool (on every path)
 //
-// Anything else (partial, unexpected, a failed migration, a failed check)
-// stops for review. There is no reset, rollback, or cleanup step.
+// Anything else (unexpected, a failed migration, a failed check) stops for
+// review. There is no reset, rollback, or cleanup step.
 import { resolve } from "node:path";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
@@ -25,8 +31,9 @@ import {
   type PoolFactory,
 } from "./live-verification";
 import {
-  APPROVED_MIGRATION,
   QUERIES,
+  checkMigrationFiles,
+  pendingTags,
   type Check,
   type MigrationFiles,
 } from "./migration-checks";
@@ -34,7 +41,7 @@ import {
   checkTestDatabase,
   checkTestDatabaseConfiguration,
   withTestDatabaseLock,
-  type TestDatabaseState,
+  type TestDatabaseCheck,
 } from "./test-database-target";
 
 export type MigrationOutcome = "migrated" | "up-to-date" | "not-migrated";
@@ -105,14 +112,7 @@ export async function runTestDatabaseMigration(
   let outcome: MigrationOutcome = "not-migrated";
 
   // 0. Before any connection.
-  check(
-    files.journalEntries === 1 && files.tag === APPROVED_MIGRATION.tag,
-    `files: the journal has exactly one entry, ${APPROVED_MIGRATION.tag}`,
-  );
-  check(
-    files.sha256 === APPROVED_MIGRATION.sha256,
-    `files: ${APPROVED_MIGRATION.tag}.sql matches the reviewed SHA-256`,
-  );
+  checkMigrationFiles(files, check);
   const connection = checkTestDatabaseConfiguration(env, check);
   if (results.some((result) => !result.pass) || !connection) {
     check(false, "connection skipped (a check above failed)");
@@ -133,21 +133,21 @@ export async function runTestDatabaseMigration(
     client: PoolClient,
     phase: string,
     lockHeldBySelf: boolean,
-  ): Promise<TestDatabaseState | undefined> => {
+  ): Promise<TestDatabaseCheck | undefined> => {
     const start = results.length;
     const prefixed: Check = (pass, label, detail) =>
       check(pass, `${phase}: ${label}`, detail);
     await client.query(QUERIES.begin);
-    let state: TestDatabaseState;
+    let state: TestDatabaseCheck;
     try {
-      state = await checkTestDatabase(client, files, prefixed, {
-        lockHeldBySelf,
-      });
+      state = await checkTestDatabase(client, prefixed, { lockHeldBySelf });
     } finally {
       await client.query(QUERIES.rollback);
     }
     return failedSince(start) ? undefined : state;
   };
+  const migratable = (found: TestDatabaseCheck | undefined) =>
+    found?.state === "fresh" || found?.state === "partial";
 
   let pool: ReturnType<PoolFactory> | undefined;
   let client: PoolClient | undefined;
@@ -162,7 +162,7 @@ export async function runTestDatabaseMigration(
 
     // 1. Before taking the lock.
     const before = await readOnlyChecks(session, "before", false);
-    if (before !== "fresh" && before !== "applied") {
+    if (!migratable(before) && before?.state !== "applied") {
       check(false, "stopped before taking the lock (see the failures above)");
       return { results, outcome };
     }
@@ -171,14 +171,14 @@ export async function runTestDatabaseMigration(
     const locked = await withTestDatabaseLock(session, async () => {
       check(true, "lock: acquired on this session");
       const state = await readOnlyChecks(session, "locked", true);
-      if (state === "applied") {
+      if (state?.state === "applied") {
         check(
           true,
-          "migration: not needed (the approved migration is already applied)",
+          "migration: not needed (every approved migration is already applied)",
         );
         return "up-to-date" as const;
       }
-      if (state !== "fresh") {
+      if (!migratable(state) || state?.applied === undefined) {
         check(
           false,
           "migration: not run (the state changed or a check failed under the lock)",
@@ -186,6 +186,7 @@ export async function runTestDatabaseMigration(
         return "not-migrated" as const;
       }
 
+      const pending = pendingTags(state.applied);
       try {
         await applyMigration(session);
       } catch (error) {
@@ -206,13 +207,13 @@ export async function runTestDatabaseMigration(
         );
         return "not-migrated" as const;
       }
-      check(true, `migration: ${APPROVED_MIGRATION.tag} applied`);
+      check(true, `migration: applied ${pending}, in one transaction`);
 
       const after = await readOnlyChecks(session, "after", true);
-      if (after !== "applied") {
+      if (after?.state !== "applied") {
         check(
           false,
-          "after: the result isn't exactly the approved migration; stopped for review",
+          "after: the result isn't exactly every approved migration; stopped for review",
         );
         return "not-migrated" as const;
       }

@@ -1,17 +1,23 @@
 import type { Pool, PoolConfig } from "pg";
 import { describe, expect, test } from "vitest";
 import {
-  PROJECT_SLUG_PATTERN,
-  SPECIFICATION_KEY_PATTERN,
-} from "../../../src/lib/db/schema";
+  APPLIED,
+  BROKEN,
+  FILES,
+  FRESH,
+  PARTIAL,
+  SESSION,
+  journalRows,
+  pg18Constraints,
+  rowCounts,
+  testDatabaseAfter,
+  type Answers,
+  type Rows,
+} from "./fixtures/test-database-answers";
 import { formatResults, type CheckResult } from "./live-verification";
 import {
-  APPROVED_MIGRATION,
-  EXPECTED_COLUMNS,
-  EXPECTED_CONSTRAINTS,
-  EXPECTED_INDEXES,
+  APPROVED_MIGRATIONS,
   QUERIES,
-  REGEX_CASES,
   type MigrationFiles,
 } from "./migration-checks";
 import {
@@ -19,13 +25,12 @@ import {
   TEST_DATABASE_LOCK,
   TEST_QUERIES,
   checkTestDatabaseConfiguration,
+  emptyTables,
+  rowCountsQuery,
   runTestDatabasePreflight,
   withTestDatabaseLock,
   type LockClient,
 } from "./test-database-target";
-
-type Rows = Record<string, unknown>[];
-type Answers = Record<string, Rows | Error>;
 
 const PASSWORD = "FakeTest:p@ss/word";
 const enc = encodeURIComponent;
@@ -37,12 +42,6 @@ const ENV = {
   DATABASE_URL: DEV_URL,
   DATABASE_MIGRATION_URL: MIGRATION_URL,
   DATABASE_SSL_MODE: "disable",
-};
-const FILES: MigrationFiles = {
-  journalEntries: 1,
-  tag: APPROVED_MIGRATION.tag,
-  when: 1794739919891,
-  sha256: APPROVED_MIGRATION.sha256,
 };
 
 function configuration(env: Record<string, string | undefined>) {
@@ -397,134 +396,6 @@ describe("withTestDatabaseLock", () => {
 
 // --- The preflight, with a fake pool ----------------------------------------
 
-const DEFS: Record<string, string> = {
-  projects_pkey: "PRIMARY KEY (id)",
-  projects_slug_format_check: `CHECK ((slug ~ '${PROJECT_SLUG_PATTERN}'::text))`,
-  projects_slug_unique: "UNIQUE (slug)",
-  specifications_key_format_check: `CHECK ((key ~ '${SPECIFICATION_KEY_PATTERN}'::text))`,
-  specifications_key_unique: "UNIQUE (key)",
-  specifications_pkey: "PRIMARY KEY (id)",
-  specifications_project_id_fkey:
-    "FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE RESTRICT",
-  specifications_status_check:
-    "CHECK ((status = ANY (ARRAY['draft'::text, 'in-review'::text, 'approved'::text])))",
-};
-
-function pg18Constraints(): Rows {
-  const all = [
-    ...EXPECTED_CONSTRAINTS.map(([table_name, name, type]) => ({
-      table_name,
-      name,
-      type,
-      definition: DEFS[name],
-      column_name: null,
-    })),
-    ...EXPECTED_COLUMNS.map(([table_name, column]) => ({
-      table_name,
-      name: `${table_name}_${column}_not_null`,
-      type: "n",
-      definition: `NOT NULL ${column}`,
-      column_name: column,
-    })),
-  ];
-  const key = (r: { table_name: string; name: string }) =>
-    `${r.table_name}\u0000${r.name}`;
-  return all.sort((a, b) => (key(a) < key(b) ? -1 : 1));
-}
-
-const SESSION = {
-  version_num: 180006,
-  server_addr: "127.0.0.1/32",
-  server_port: 5432,
-  client_addr: "127.0.0.1/32",
-  current_role_name: "ai_spec_studio_test",
-  session_role_name: "ai_spec_studio_test",
-  database_name: "ai_spec_studio_test",
-  auth_identity: "scram-sha-256:ai_spec_studio_test",
-  search_path: '"$user", public',
-  current_schema_name: "public",
-  read_only: "on",
-  ssl: false,
-};
-
-const COMMON: Answers = {
-  session: [SESSION],
-  role: [
-    {
-      rolsuper: false,
-      rolcreaterole: false,
-      rolcreatedb: false,
-      rolreplication: false,
-      rolbypassrls: false,
-    },
-  ],
-  label: [{ setconfig: ["app.environment=test"] }],
-  memberships: [{ memberships: 0 }],
-  privileges: [{ create_db: true, usage_public: true, create_public: true }],
-  sessions: [{ other_migrator_sessions: 0 }],
-  lock_holders: [{ holders: 0 }],
-  regex: REGEX_CASES.map((c, i) => ({ i: i + 1, matched: c.matches })),
-};
-
-const FRESH: Answers = {
-  ...COMMON,
-  objects: [
-    {
-      projects: false,
-      specifications: false,
-      journal: false,
-      public_relations: 0,
-    },
-  ],
-  schemas: [{ name: "public" }],
-};
-
-const APPLIED: Answers = {
-  ...COMMON,
-  objects: [
-    {
-      projects: true,
-      specifications: true,
-      journal: true,
-      public_relations: 8,
-    },
-  ],
-  schemas: [{ name: "drizzle" }, { name: "public" }],
-  journal: [{ hash: APPROVED_MIGRATION.sha256, created_at: "1794739919891" }],
-  journal_owner: [
-    { schema_owner: "ai_spec_studio_test", table_owner: "ai_spec_studio_test" },
-  ],
-  tables: ["projects", "specifications"].map((name) => ({
-    name,
-    kind: "r",
-    owner: "ai_spec_studio_test",
-    rls: false,
-  })),
-  columns: EXPECTED_COLUMNS.map(
-    ([table_name, column_name, type, nullable, default_value]) => ({
-      table_name,
-      column_name,
-      type,
-      nullable,
-      default_value,
-    }),
-  ),
-  constraints: pg18Constraints(),
-  indexes: EXPECTED_INDEXES.map(([table_name, name, fragment]) => ({
-    table_name,
-    name,
-    definition: `CREATE INDEX ${name} ON public.${table_name} ${fragment}`,
-  })),
-  extras: [{ triggers: 0, functions: 0 }],
-  foreign_grants: ["projects", "specifications"].map((table_name) => ({
-    table_name,
-    app_any: false,
-    migrator_any: false,
-    public_any: false,
-  })),
-  row_counts: [{ projects: 0, specifications: 0 }],
-};
-
 type Call = { text: string; values?: unknown[] };
 
 async function preflight(
@@ -590,12 +461,28 @@ async function preflight(
   };
 }
 
+const ALL_TABLES = [
+  "accounts",
+  "projects",
+  "sessions",
+  "specifications",
+  "users",
+  "verifications",
+];
+const EVERY_APPLIED =
+  "state: every approved migration is applied exactly (0000_initial_schema, 0001_auth_tables)";
+const PARTIAL_EXACT =
+  "state: partially migrated, exactly as reviewed (applied: 0000_initial_schema; pending: 0001_auth_tables)";
+const UNEXPECTED =
+  "state: neither fresh nor exactly the first approved migrations, in order";
+
 describe("runTestDatabasePreflight", () => {
   test("a fresh test database passes, read-only, and the pool closes", async () => {
     const result = await preflight(FRESH);
     expect(result.failed).toEqual([]);
     expect(result.state).toBe("fresh");
-    expect(result.output).toMatch(/ALL 30 CHECKS PASSED$/);
+    expect(result.applied).toBe(0);
+    expect(result.output).toMatch(/ALL 36 CHECKS PASSED$/);
     expect(result.output).toContain(
       "PASS  state: fresh (no drizzle schema, no migration journal, schema public empty)",
     );
@@ -619,102 +506,120 @@ describe("runTestDatabasePreflight", () => {
     expectNoSecrets(result.output);
   });
 
-  test("a database with exactly the approved migration passes", async () => {
+  test("a database with every approved migration applied exactly passes", async () => {
     const result = await preflight(APPLIED);
     expect(result.failed).toEqual([]);
     expect(result.state).toBe("applied");
-    expect(result.output).toMatch(/ALL 40 CHECKS PASSED$/);
+    expect(result.applied).toBe(2);
+    expect(result.output).toMatch(/ALL 46 CHECKS PASSED$/);
+    expect(result.output).toContain(`PASS  ${EVERY_APPLIED}`);
     expect(result.output).toContain(
-      "PASS  state: the approved migration is applied exactly",
+      "PASS  tables: exactly accounts, projects, sessions, specifications, users, and verifications in public, owned by ai_spec_studio_test, no row-level security",
     );
     expect(result.output).toContain(
-      "PASS  tables: exactly projects and specifications in public, owned by ai_spec_studio_test, no row-level security",
+      "PASS  state: all 6 tables are empty (nothing left by earlier runs)",
     );
     expect(
       result.fake.calls.find((c) => c.text === TEST_QUERIES.foreignGrants)
         ?.values,
-    ).toEqual(["ai_spec_studio_app", "ai_spec_studio_migrator"]);
+    ).toEqual(["ai_spec_studio_app", "ai_spec_studio_migrator", ALL_TABLES]);
+    expect(
+      result.fake.calls.some((c) => c.text === rowCountsQuery(ALL_TABLES)),
+    ).toBe(true);
   });
 
-  const UNEXPECTED =
-    "state: neither fresh nor exactly the approved migration (partial or unexpected)";
+  test("a database with exactly 0000_initial_schema applied is partially migrated", async () => {
+    const result = await preflight(PARTIAL);
+    expect(result.failed).toEqual([]);
+    expect(result.state).toBe("partial");
+    expect(result.applied).toBe(1);
+    expect(result.output).toContain(`PASS  ${PARTIAL_EXACT}`);
+    expect(result.output).toContain(
+      "PASS  tables: exactly projects and specifications in public, owned by ai_spec_studio_test, no row-level security",
+    );
+    // Only the tables that exist are counted and checked.
+    expect(
+      result.fake.calls.some(
+        (c) => c.text === rowCountsQuery(["projects", "specifications"]),
+      ),
+    ).toBe(true);
+    expect(
+      result.fake.calls.find((c) => c.text === TEST_QUERIES.foreignGrants)
+        ?.values,
+    ).toEqual([
+      "ai_spec_studio_app",
+      "ai_spec_studio_migrator",
+      ["projects", "specifications"],
+    ]);
+  });
+
   test.each([
     [
       "a drizzle schema without a journal",
-      { ...FRESH, schemas: [{ name: "drizzle" }, { name: "public" }] },
-      "(DRIZZLE_SCHEMA, NO_JOURNAL, NO_PROJECTS, NO_SPECIFICATIONS, PUBLIC_EMPTY)",
+      BROKEN,
+      "(DRIZZLE_SCHEMA, NO_JOURNAL, PUBLIC_EMPTY)",
     ],
     [
       "tables without a journal",
-      {
-        ...FRESH,
-        objects: [
-          {
-            projects: true,
-            specifications: true,
-            journal: false,
-            public_relations: 8,
-          },
-        ],
-      },
-      "(NO_DRIZZLE_SCHEMA, NO_JOURNAL, PROJECTS, SPECIFICATIONS, PUBLIC_NOT_EMPTY)",
-    ],
-    [
-      "a journal without tables",
-      {
-        ...FRESH,
-        schemas: [{ name: "drizzle" }, { name: "public" }],
-        objects: [
-          {
-            projects: false,
-            specifications: false,
-            journal: true,
-            public_relations: 0,
-          },
-        ],
-      },
-      "(DRIZZLE_SCHEMA, JOURNAL, NO_PROJECTS, NO_SPECIFICATIONS, PUBLIC_EMPTY)",
+      { ...FRESH, objects: [{ journal: false, public_relations: 8 }] },
+      "(NO_DRIZZLE_SCHEMA, NO_JOURNAL, PUBLIC_NOT_EMPTY)",
     ],
     [
       "something else in public",
+      { ...FRESH, objects: [{ journal: false, public_relations: 1 }] },
+      "(NO_DRIZZLE_SCHEMA, NO_JOURNAL, PUBLIC_NOT_EMPTY)",
+    ],
+    [
+      "an empty journal",
+      { ...APPLIED, journal: [] },
+      "(DRIZZLE_SCHEMA, JOURNAL, PUBLIC_NOT_EMPTY, JOURNAL_ROWS_0, JOURNAL_EMPTY)",
+    ],
+    [
+      "the migrations journaled out of order",
+      { ...APPLIED, journal: [...journalRows(2)].reverse() },
+      "(DRIZZLE_SCHEMA, JOURNAL, PUBLIC_NOT_EMPTY, JOURNAL_ROWS_2, JOURNAL_NOT_APPROVED_PREFIX)",
+    ],
+    [
+      "0001 journaled without 0000",
+      { ...APPLIED, journal: journalRows(2).slice(1) },
+      "(DRIZZLE_SCHEMA, JOURNAL, PUBLIC_NOT_EMPTY, JOURNAL_ROWS_1, JOURNAL_NOT_APPROVED_PREFIX)",
+    ],
+    [
+      "a different migration hash",
       {
-        ...FRESH,
-        objects: [
+        ...APPLIED,
+        journal: [
+          journalRows(2)[0]!,
           {
-            projects: false,
-            specifications: false,
-            journal: false,
-            public_relations: 1,
+            hash: "0".repeat(64),
+            created_at: String(APPROVED_MIGRATIONS[1]!.when),
           },
         ],
       },
-      "(NO_DRIZZLE_SCHEMA, NO_JOURNAL, NO_PROJECTS, NO_SPECIFICATIONS, PUBLIC_NOT_EMPTY)",
+      "(DRIZZLE_SCHEMA, JOURNAL, PUBLIC_NOT_EMPTY, JOURNAL_ROWS_2, JOURNAL_NOT_APPROVED_PREFIX)",
     ],
-  ])("rejects a partial state: %s", async (_, answers, detail) => {
+    [
+      "an unknown later migration",
+      {
+        ...APPLIED,
+        journal: [
+          ...journalRows(2),
+          { hash: "f".repeat(64), created_at: "1999999999999" },
+        ],
+      },
+      "(DRIZZLE_SCHEMA, JOURNAL, PUBLIC_NOT_EMPTY, JOURNAL_ROWS_3, JOURNAL_NOT_APPROVED_PREFIX)",
+    ],
+  ])("rejects an unknown state: %s", async (_, answers, detail) => {
     const result = await preflight(answers as Answers);
     expect(result.state).toBe("unexpected");
+    expect(result.applied).toBeUndefined();
     expect(result.results.find((r) => r.label === UNEXPECTED)?.detail).toBe(
       detail,
     );
   });
 
-  const EXACT = "state: the approved migration is applied exactly";
+  const appliedTables = APPLIED.tables as Rows;
   test.each([
-    [
-      "an empty journal",
-      { journal: [] },
-      "journal: exactly one applied migration, with the hash and timestamp of 0000_initial_schema",
-    ],
-    [
-      "two journal rows",
-      { journal: [...(APPLIED.journal as Rows), ...(APPLIED.journal as Rows)] },
-      "journal: exactly one applied migration, with the hash and timestamp of 0000_initial_schema",
-    ],
-    [
-      "a different migration hash",
-      { journal: [{ hash: "0".repeat(64), created_at: "1794739919891" }] },
-      "journal: exactly one applied migration, with the hash and timestamp of 0000_initial_schema",
-    ],
     [
       "a journal owned by the migrator",
       {
@@ -728,38 +633,39 @@ describe("runTestDatabasePreflight", () => {
       "journal: drizzle schema and __drizzle_migrations owned by ai_spec_studio_test",
     ],
     [
-      "tables owned by the migrator",
+      "auth tables owned by the migrator",
       {
-        tables: ["projects", "specifications"].map((name) => ({
-          name,
-          kind: "r",
-          owner: "ai_spec_studio_migrator",
-          rls: false,
-        })),
+        tables: appliedTables.map((t) =>
+          ["users", "sessions", "accounts", "verifications"].includes(
+            t.name as string,
+          )
+            ? { ...t, owner: "ai_spec_studio_migrator" }
+            : t,
+        ),
       },
-      "tables: exactly projects and specifications in public, owned by ai_spec_studio_test, no row-level security",
+      "tables: exactly accounts, projects, sessions, specifications, users, and verifications in public, owned by ai_spec_studio_test, no row-level security",
     ],
     [
       "a changed constraint",
       {
         constraints: pg18Constraints().map((r) =>
-          r.name === "specifications_project_id_fkey"
+          r.name === "sessions_user_id_fkey"
             ? {
                 ...r,
                 definition:
-                  "FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE",
+                  "FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE NO ACTION",
               }
             : r,
         ),
       },
-      "constraints: primary keys, UNIQUE, CHECK, and the RESTRICT foreign key as reviewed",
+      "constraints: exactly the 18 reviewed primary key, UNIQUE, CHECK, and foreign key constraints",
     ],
     [
-      "a grant to the app role",
+      "a grant to the app role on sessions",
       {
-        foreign_grants: ["projects", "specifications"].map((table_name) => ({
+        foreign_grants: ALL_TABLES.map((table_name) => ({
           table_name,
-          app_any: true,
+          app_any: table_name === "sessions",
           migrator_any: false,
           public_any: false,
         })),
@@ -767,14 +673,61 @@ describe("runTestDatabasePreflight", () => {
       "grants: the app role, the migrator, and PUBLIC have no table privileges",
     ],
     [
-      "rows left behind",
-      { row_counts: [{ projects: 1, specifications: 0 }] },
-      "state: both tables are empty (nothing left by earlier runs)",
+      "a missing table in the grants",
+      {
+        foreign_grants: ALL_TABLES.filter((t) => t !== "accounts").map(
+          (table_name) => ({
+            table_name,
+            app_any: false,
+            migrator_any: false,
+            public_any: false,
+          }),
+        ),
+      },
+      "grants: the app role, the migrator, and PUBLIC have no table privileges",
+    ],
+    [
+      "a session row left behind",
+      { row_counts: rowCounts(2, { sessions: 1 }) },
+      "state: all 6 tables are empty (nothing left by earlier runs)",
+    ],
+    [
+      "a count missing for one table",
+      { row_counts: [{ ...rowCounts(2)[0], users: null }] },
+      "state: all 6 tables are empty (nothing left by earlier runs)",
     ],
   ])("an applied database with %s is unexpected", async (_, change, label) => {
     const result = await preflight({ ...APPLIED, ...(change as Answers) });
     expect(result.state).toBe("unexpected");
-    expect(result.failed).toEqual([label, EXACT]);
+    expect(result.failed).toEqual([label, EVERY_APPLIED]);
+  });
+
+  test("rows left behind are reported per table", async () => {
+    const result = await preflight({
+      ...APPLIED,
+      row_counts: rowCounts(2, { projects: 1, users: 2 }),
+    });
+    expect(
+      result.results.find((r) => r.label.startsWith("state: all 6 tables"))
+        ?.detail,
+    ).toBe(
+      "(accounts: 0, projects: 1, sessions: 0, specifications: 0, users: 2, verifications: 0)",
+    );
+  });
+
+  test("a partially migrated database with an extra auth table is unexpected", async () => {
+    const result = await preflight({
+      ...PARTIAL,
+      tables: [
+        ...(PARTIAL.tables as Rows),
+        { name: "users", kind: "r", owner: "ai_spec_studio_test", rls: false },
+      ],
+    });
+    expect(result.state).toBe("unexpected");
+    expect(result.failed).toEqual([
+      "tables: exactly projects and specifications in public, owned by ai_spec_studio_test, no row-level security",
+      PARTIAL_EXACT,
+    ]);
   });
 
   test.each([
@@ -856,8 +809,25 @@ describe("runTestDatabasePreflight", () => {
 
   test.each([
     [
-      "a changed migration file",
-      { files: { ...FILES, sha256: "0".repeat(64) } },
+      "a changed 0001 migration",
+      {
+        files: {
+          ...FILES,
+          sha256: { ...FILES.sha256, "0001_auth_tables.sql": "0".repeat(64) },
+        },
+      },
+    ],
+    [
+      "a missing journal entry",
+      {
+        files: {
+          ...FILES,
+          journal: {
+            ...FILES.journal,
+            entries: FILES.journal.entries.slice(0, 1),
+          },
+        },
+      },
     ],
     ["a PG* variable", { env: { ...ENV, PGHOST: "FakeHost" } }],
     [
@@ -902,14 +872,47 @@ describe("runTestDatabasePreflight", () => {
     expect(result.fake.released && result.fake.ended).toBe(true);
     expectNoSecrets(result.output);
   });
+
+  test("the fixture for any applied count is internally consistent", async () => {
+    for (const applied of [1, 2]) {
+      const result = await preflight(testDatabaseAfter(applied));
+      expect(result.failed).toEqual([]);
+    }
+  });
+});
+
+describe("rowCountsQuery and emptyTables", () => {
+  test("counts each approved table, quoted, in one read-only SELECT", () => {
+    expect(rowCountsQuery(["projects", "users"])).toBe(
+      '/* row_counts */\nSELECT (SELECT count(*)::int FROM public."projects") AS "projects",\n       (SELECT count(*)::int FROM public."users") AS "users"',
+    );
+  });
+
+  test.each([
+    [[]],
+    [["users; DROP TABLE users"]],
+    [['users" --']],
+    [["Users"]],
+    [["public.users"]],
+  ])("refuses anything but plain lowercase names: %j", (tables) => {
+    expect(() => rowCountsQuery(tables)).toThrow(TypeError);
+  });
+
+  test("only zero counts are empty", () => {
+    expect(emptyTables({ a: 0, b: 0 }, ["a", "b"]).empty).toBe(true);
+    expect(emptyTables({ a: 0, b: 1 }, ["a", "b"]).empty).toBe(false);
+    expect(emptyTables({ a: 0 }, ["a", "b"]).empty).toBe(false);
+    expect(emptyTables({ a: "0", b: 0 }, ["a", "b"]).empty).toBe(false);
+  });
 });
 
 describe("the test-database SQL", () => {
   test.each([
     ...Object.entries(TEST_QUERIES),
     ["holders", LOCK_QUERIES.holders],
+    ["row_counts", rowCountsQuery(ALL_TABLES)],
   ])("%s is read-only", (_, text) => {
-    const code = text.replace(/'[^']*'/g, "''");
+    const code = text.replace(/'[^']*'/g, "''").replace(/"[^"]*"/g, '""');
     expect(code).toMatch(/^\/\* \w+ \*\/\nSELECT /);
     expect(code).not.toMatch(
       /\b(INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP|TRUNCATE|GRANT|REVOKE|COPY|CALL|DO|SET|RESET|LOCK|VACUUM|ANALYZE|REINDEX|CLUSTER|REFRESH|COMMENT|SECURITY|nextval|setval|pg_terminate|pg_cancel|pg_reload|set_config|lo_|pg_try_advisory_lock|pg_advisory_lock|pg_advisory_unlock)\b/i,

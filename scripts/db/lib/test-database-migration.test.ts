@@ -3,19 +3,22 @@ import { Pool, type PoolClient, type PoolConfig } from "pg";
 import { describe, expect, test } from "vitest";
 import {
   APPLIED,
+  BROKEN,
+  FILES,
   FRESH,
   PARTIAL,
   SESSION,
+  journalRows,
+  rowCounts,
   type Answers,
   type Rows,
 } from "./fixtures/test-database-answers";
 import { formatResults } from "./live-verification";
 import {
-  APPROVED_MIGRATION,
+  APPROVED_MIGRATIONS,
   QUERIES,
   type MigrationFiles,
 } from "./migration-checks";
-import { readMigrationFiles } from "./migration-files";
 import {
   assertDedicatedClient,
   drizzleApplyMigration,
@@ -34,12 +37,6 @@ const ENV = {
   TEST_DATABASE_URL: TEST_URL,
   DATABASE_MIGRATION_URL: MIGRATION_URL,
   DATABASE_SSL_MODE: "disable",
-};
-const FILES: MigrationFiles = {
-  journalEntries: 1,
-  tag: APPROVED_MIGRATION.tag,
-  when: 1794739919891,
-  sha256: APPROVED_MIGRATION.sha256,
 };
 const LOCK_KEYS = [TEST_DATABASE_LOCK.classId, TEST_DATABASE_LOCK.objectId];
 
@@ -161,7 +158,7 @@ describe("the fresh state", () => {
     const r = await runner();
     expect(r.failed).toEqual([]);
     expect(r.outcome).toBe("migrated");
-    expect(r.output).toMatch(/ALL 83 CHECKS PASSED$/);
+    expect(r.output).toMatch(/ALL 89 CHECKS PASSED$/);
 
     // One pool, one connection, one client for everything.
     expect(r.fake.pools).toHaveLength(1);
@@ -184,8 +181,8 @@ describe("the fresh state", () => {
     expect(r.fake.ended).toBe(true);
     for (const label of [
       "lock: acquired on this session",
-      "migration: 0000_initial_schema applied",
-      "after: state: the approved migration is applied exactly",
+      "migration: applied 0000_initial_schema, 0001_auth_tables, in one transaction",
+      "after: state: every approved migration is applied exactly (0000_initial_schema, 0001_auth_tables)",
       "locked: concurrency: this session holds the test-database advisory lock, and no other session does",
       "lock: released",
       "pool closed",
@@ -213,6 +210,61 @@ describe("the fresh state", () => {
   });
 });
 
+describe("the partial state (only 0000_initial_schema applied)", () => {
+  test("applies only the pending 0001_auth_tables, on the locked session, and verifies the result", async () => {
+    const r = await runner({ phases: [PARTIAL, PARTIAL, APPLIED] });
+    expect(r.failed).toEqual([]);
+    expect(r.outcome).toBe("migrated");
+    expect(r.fake.applied).toEqual([r.fake.client]);
+    expect(r.output).toContain(
+      "PASS  before: state: partially migrated, exactly as reviewed (applied: 0000_initial_schema; pending: 0001_auth_tables)",
+    );
+    expect(r.output).toContain(
+      "PASS  migration: applied 0001_auth_tables, in one transaction",
+    );
+    expect(r.output).toContain(
+      "PASS  after: state: every approved migration is applied exactly (0000_initial_schema, 0001_auth_tables)",
+    );
+    expect(r.lockCalls).toEqual([LOCK_QUERIES.tryLock, LOCK_QUERIES.unlock]);
+    expect(r.fake.client!.released && r.fake.ended).toBe(true);
+  });
+
+  test("a partial database with rows left behind stops before the lock", async () => {
+    const r = await runner({
+      phases: [{ ...PARTIAL, row_counts: rowCounts(1, { projects: 1 }) }],
+    });
+    expect(r.outcome).toBe("not-migrated");
+    expect(r.lockCalls).toEqual([]);
+    expect(r.fake.applied).toEqual([]);
+  });
+
+  test("a failure while applying 0001 leaves 0000 intact (the migration's transaction rolled back)", async () => {
+    const r = await runner({
+      phases: [PARTIAL, PARTIAL, PARTIAL],
+      apply: async () => {
+        throw Object.assign(new Error("boom"), { code: "42P07" });
+      },
+    });
+    expect(r.outcome).toBe("not-migrated");
+    expect(
+      r.results.find((x) => x.label.startsWith("migration: failed"))?.detail,
+    ).toBe("(42P07)");
+    // The state recorded after the failure is the verified partial state.
+    expect(r.output).toContain(
+      "PASS  after failure: state: partially migrated, exactly as reviewed (applied: 0000_initial_schema; pending: 0001_auth_tables)",
+    );
+    expect(r.lockCalls).toEqual([LOCK_QUERIES.tryLock, LOCK_QUERIES.unlock]);
+  });
+
+  test("a result that is still partial after migrating stops for review", async () => {
+    const r = await runner({ phases: [PARTIAL, PARTIAL, PARTIAL] });
+    expect(r.outcome).toBe("not-migrated");
+    expect(r.failed).toContain(
+      "after: the result isn't exactly every approved migration; stopped for review",
+    );
+  });
+});
+
 describe("the applied state", () => {
   test("is a no-op: no migration, verified under the lock, lock released", async () => {
     const r = await runner({ phases: [APPLIED, APPLIED] });
@@ -220,7 +272,7 @@ describe("the applied state", () => {
     expect(r.outcome).toBe("up-to-date");
     expect(r.fake.applied).toEqual([]);
     expect(r.output).toContain(
-      "PASS  migration: not needed (the approved migration is already applied)",
+      "PASS  migration: not needed (every approved migration is already applied)",
     );
     expect(r.lockCalls).toEqual([LOCK_QUERIES.tryLock, LOCK_QUERIES.unlock]);
     expect(r.fake.ended).toBe(true);
@@ -228,8 +280,8 @@ describe("the applied state", () => {
 });
 
 describe("unexpected states", () => {
-  test("a partial state stops before the lock is taken", async () => {
-    const r = await runner({ phases: [PARTIAL] });
+  test("a broken state (drizzle schema only) stops before the lock is taken", async () => {
+    const r = await runner({ phases: [BROKEN] });
     expect(r.outcome).toBe("not-migrated");
     expect(r.fake.applied).toEqual([]);
     expect(r.lockCalls).toEqual([]);
@@ -242,28 +294,53 @@ describe("unexpected states", () => {
   test.each([
     [
       "an unexpected object in public",
-      {
-        ...FRESH,
-        objects: [
-          {
-            projects: false,
-            specifications: false,
-            journal: false,
-            public_relations: 1,
-          },
-        ],
-      },
+      { ...FRESH, objects: [{ journal: false, public_relations: 1 }] },
     ],
     [
       "an applied state with the wrong hash",
       {
         ...APPLIED,
-        journal: [{ hash: "0".repeat(64), created_at: "1794739919891" }],
+        journal: [
+          journalRows(2)[0]!,
+          {
+            hash: "0".repeat(64),
+            created_at: String(APPROVED_MIGRATIONS[1]!.when),
+          },
+        ],
+      },
+    ],
+    [
+      "the migrations journaled out of order",
+      { ...APPLIED, journal: [...journalRows(2)].reverse() },
+    ],
+    [
+      "an unknown later migration",
+      {
+        ...APPLIED,
+        journal: [
+          ...journalRows(2),
+          { hash: "f".repeat(64), created_at: "1999999999999" },
+        ],
       },
     ],
     [
       "an applied state with rows",
-      { ...APPLIED, row_counts: [{ projects: 3, specifications: 0 }] },
+      { ...APPLIED, row_counts: rowCounts(2, { accounts: 3 }) },
+    ],
+    [
+      "a partial state with an auth table but no journal row for it",
+      {
+        ...PARTIAL,
+        tables: [
+          ...(PARTIAL.tables as Rows),
+          {
+            name: "users",
+            kind: "r",
+            owner: "ai_spec_studio_test",
+            rls: false,
+          },
+        ],
+      },
     ],
     [
       "the development label",
@@ -295,7 +372,7 @@ describe("unexpected states", () => {
   });
 
   test("a state that changes under the lock: no migration, lock released", async () => {
-    const r = await runner({ phases: [FRESH, PARTIAL] });
+    const r = await runner({ phases: [FRESH, BROKEN] });
     expect(r.outcome).toBe("not-migrated");
     expect(r.fake.applied).toEqual([]);
     expect(r.failed).toContain(
@@ -362,7 +439,7 @@ describe("the advisory lock", () => {
 describe("failures during and after the migration", () => {
   test("a migration failure stops for review, rolls back, records the state, and releases the lock", async () => {
     const r = await runner({
-      phases: [FRESH, FRESH, PARTIAL],
+      phases: [FRESH, FRESH, BROKEN],
       apply: async () => {
         throw Object.assign(new Error(`syntax error near ${TEST_URL}`), {
           code: "42601",
@@ -381,7 +458,7 @@ describe("failures during and after the migration", () => {
     const migrateAt = calls.indexOf("<migrate>");
     expect(calls[migrateAt + 1]).toBe(QUERIES.rollback);
     expect(r.failed).toContain(
-      "after failure: state: neither fresh nor exactly the approved migration (partial or unexpected)",
+      "after failure: state: neither fresh nor exactly the first approved migrations, in order",
     );
     expect(calls.at(-1)).toBe(LOCK_QUERIES.unlock);
     expect(r.fake.client!.released && r.fake.ended).toBe(true);
@@ -411,18 +488,11 @@ describe("failures during and after the migration", () => {
 
   test("a postflight failure stops for review and releases the lock", async () => {
     const r = await runner({
-      phases: [
-        FRESH,
-        FRESH,
-        {
-          ...APPLIED,
-          journal: [{ hash: "0".repeat(64), created_at: "1794739919891" }],
-        },
-      ],
+      phases: [FRESH, FRESH, { ...APPLIED, journal: journalRows(1) }],
     });
     expect(r.outcome).toBe("not-migrated");
     expect(r.failed).toContain(
-      "after: the result isn't exactly the approved migration; stopped for review",
+      "after: the result isn't exactly every approved migration; stopped for review",
     );
     expect(r.lockCalls).toEqual([LOCK_QUERIES.tryLock, LOCK_QUERIES.unlock]);
     expect(r.fake.ended).toBe(true);
@@ -509,10 +579,35 @@ describe("no connection before the safety checks pass", () => {
     ["a PG* variable", { env: { ...ENV, PGPASSWORD: "FakeEnvPw" } }],
     ["production", { env: { ...ENV, NODE_ENV: "production" } }],
     [
-      "a changed migration file",
-      { files: { ...FILES, sha256: "0".repeat(64) } },
+      "a changed 0001 migration file",
+      {
+        files: {
+          ...FILES,
+          sha256: { ...FILES.sha256, "0001_auth_tables.sql": "0".repeat(64) },
+        },
+      },
     ],
-    ["a second journal entry", { files: { ...FILES, journalEntries: 2 } }],
+    [
+      "a missing journal entry",
+      {
+        files: {
+          ...FILES,
+          journal: {
+            ...FILES.journal,
+            entries: FILES.journal.entries.slice(0, 1),
+          },
+        },
+      },
+    ],
+    [
+      "an extra migration file",
+      {
+        files: {
+          ...FILES,
+          listing: [...FILES.listing, "0002_extra.sql"].sort(),
+        },
+      },
+    ],
   ])("%s", async (_, options) => {
     const r = await runner(options);
     expect(r.fake.pools).toHaveLength(0);
@@ -530,7 +625,15 @@ describe("drizzleApplyMigration", () => {
   class FakeCheckedOutClient {
     readonly texts: string[] = [];
     readonly values: unknown[][] = [];
-    async query(config: string | { text: string }, values?: unknown[]) {
+    async query(
+      config: string | { text: string },
+      values?: unknown[],
+    ): Promise<{
+      rows: unknown[];
+      rowCount: number;
+      fields: unknown[];
+      command: string;
+    }> {
       const text = typeof config === "string" ? config : config.text;
       this.texts.push(text.replace(/\s+/g, " ").trim());
       this.values.push(values ?? []);
@@ -539,12 +642,14 @@ describe("drizzleApplyMigration", () => {
     release() {}
   }
 
-  test("runs every migration statement on the one client it is given", async () => {
+  const statements = (tag: string) =>
+    readFileSync(`drizzle/${tag}.sql`, "utf8")
+      .split("--> statement-breakpoint")
+      .map((statement) => statement.replace(/\s+/g, " ").trim());
+
+  test("from a fresh database: every migration, in order, in one transaction on the one client", async () => {
     const client = new FakeCheckedOutClient();
     await drizzleApplyMigration(client as unknown as PoolClient);
-    const sql = readFileSync("drizzle/0000_initial_schema.sql", "utf8")
-      .split("--> statement-breakpoint")
-      .map((s) => s.replace(/\s+/g, " ").trim());
     expect(client.texts[0]).toBe('CREATE SCHEMA IF NOT EXISTS "drizzle"');
     expect(client.texts[1]).toMatch(
       /^CREATE TABLE IF NOT EXISTS "drizzle"\."__drizzle_migrations"/,
@@ -553,16 +658,97 @@ describe("drizzleApplyMigration", () => {
       /^select id, hash, created_at from "drizzle"\."__drizzle_migrations"/,
     );
     expect(client.texts[3]).toBe("begin");
+    let at = 4;
+    for (const migration of APPROVED_MIGRATIONS) {
+      const sql = statements(migration.tag);
+      expect(client.texts.slice(at, at + sql.length)).toEqual(sql);
+      at += sql.length;
+      expect(client.texts[at]).toMatch(
+        /^insert into "drizzle"\."__drizzle_migrations"/,
+      );
+      expect(client.values[at]).toEqual([migration.sha256, migration.when]);
+      at += 1;
+    }
+    expect(client.texts[at]).toBe("commit");
+    expect(client.texts).toHaveLength(at + 1);
+    expect(client.texts.filter((t) => t === "begin")).toHaveLength(1);
+  });
+
+  test("after 0000_initial_schema: only 0001_auth_tables, in one transaction", async () => {
+    const [m0, m1] = APPROVED_MIGRATIONS;
+    const client = new FakeCheckedOutClient();
+    const original = client.query.bind(client);
+    client.query = async (config, values) => {
+      const result = await original(config, values);
+      // The migrator reads the latest journaled migration: 0000.
+      if (client.texts.at(-1)?.startsWith("select id, hash, created_at")) {
+        return {
+          ...result,
+          rows: [{ id: 1, hash: m0!.sha256, created_at: String(m0!.when) }],
+        };
+      }
+      return result;
+    };
+    await drizzleApplyMigration(client as unknown as PoolClient);
+    const sql = statements(m1!.tag);
+    expect(client.texts[3]).toBe("begin");
     expect(client.texts.slice(4, 4 + sql.length)).toEqual(sql);
-    expect(client.texts[4 + sql.length]).toMatch(
-      /^insert into "drizzle"\."__drizzle_migrations"/,
-    );
-    expect(client.values[4 + sql.length]).toEqual([
-      APPROVED_MIGRATION.sha256,
-      readMigrationFiles().when,
-    ]);
+    expect(client.values[4 + sql.length]).toEqual([m1!.sha256, m1!.when]);
     expect(client.texts[5 + sql.length]).toBe("commit");
     expect(client.texts).toHaveLength(6 + sql.length);
+    expect(client.texts.join("\n")).not.toContain('CREATE TABLE "projects"');
+  });
+
+  test("with every migration applied: nothing but an empty transaction", async () => {
+    const last = APPROVED_MIGRATIONS.at(-1)!;
+    const client = new FakeCheckedOutClient();
+    const original = client.query.bind(client);
+    client.query = async (config, values) => {
+      const result = await original(config, values);
+      if (client.texts.at(-1)?.startsWith("select id, hash, created_at")) {
+        return {
+          ...result,
+          rows: [{ id: 2, hash: last.sha256, created_at: String(last.when) }],
+        };
+      }
+      return result;
+    };
+    await drizzleApplyMigration(client as unknown as PoolClient);
+    expect(client.texts.slice(3)).toEqual(["begin", "commit"]);
+  });
+
+  test("a failure in 0001 rolls back 0000's statements too (one transaction)", async () => {
+    const client = new FakeCheckedOutClient();
+    const original = client.query.bind(client);
+    client.query = async (config, values) => {
+      const result = await original(config, values);
+      if (client.texts.at(-1)?.startsWith('CREATE TABLE "sessions"')) {
+        throw Object.assign(new Error("boom"), { code: "42P07" });
+      }
+      return result;
+    };
+    const failure = await drizzleApplyMigration(
+      client as unknown as PoolClient,
+    ).catch((error: unknown) => error);
+    expect(migrationErrorKind(failure)).toBe("42P07");
+    // 0000's statements ran first, inside the same (only) transaction...
+    const begin = client.texts.indexOf("begin");
+    const projects = client.texts.findIndex((t) =>
+      t.startsWith('CREATE TABLE "projects"'),
+    );
+    expect(begin).toBeGreaterThan(-1);
+    expect(projects).toBeGreaterThan(begin);
+    expect(client.texts.filter((t) => t === "begin")).toHaveLength(1);
+    expect(client.texts.at(-1)).toBe("rollback");
+    expect(client.texts).not.toContain("commit");
+    // ...and 0000's journal row was written inside it, so it is rolled back
+    // with everything else.
+    expect(client.texts.filter((t) => t.startsWith("insert into")).length).toBe(
+      1,
+    );
+    expect(
+      client.texts.findIndex((t) => t.startsWith("insert into")),
+    ).toBeGreaterThan(begin);
   });
 
   test("rolls back on the same client when a statement fails", async () => {
@@ -636,10 +822,15 @@ describe("the read-only SQL used under the lock", () => {
     expect(text).not.toMatch(/pg_(try_)?advisory_(un)?lock/);
   });
 
-  test("the fixtures have one approved journal row", () => {
-    expect((APPLIED.journal as Rows)[0]).toEqual({
-      hash: APPROVED_MIGRATION.sha256,
-      created_at: String(FILES.when),
-    });
+  test("the fixtures journal every approved migration, in order", () => {
+    expect(APPLIED.journal as Rows).toEqual(
+      APPROVED_MIGRATIONS.map((m) => ({
+        hash: m.sha256,
+        created_at: String(m.when),
+      })),
+    );
+    expect(PARTIAL.journal as Rows).toEqual(
+      (APPLIED.journal as Rows).slice(0, 1),
+    );
   });
 });

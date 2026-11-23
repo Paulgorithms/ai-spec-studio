@@ -59,6 +59,28 @@ See [`CLAUDE.md`](./CLAUDE.md) for branch names, commit messages, and the rest o
 
 [`CLAUDE.md`](./CLAUDE.md) covers how it's built: the route structure, design tokens, theme internals (including what a future Content Security Policy needs), components, and accessibility rules.
 
+## Authentication
+
+Sign-in with GitHub and Google uses [Better Auth](https://www.better-auth.com/) 1.7.27, served from `/api/auth/*` (`src/app/api/auth/[...all]/route.ts`), with sessions stored in PostgreSQL (the `users`, `sessions`, `accounts`, and `verifications` tables). The configuration is in `src/lib/auth/server.ts`; the environment variables are listed in [`.env.example`](./.env.example) and validated by `src/lib/auth/env.ts` on the first `/api/auth` request. There is no sign-in page or route protection yet.
+
+### What the code does today
+
+- **Sessions:** a signed, `HttpOnly`, `SameSite=Lax` cookie (`Secure` and `__Secure-` prefixed whenever `BETTER_AUTH_URL` is HTTPS) that refers to a row in `sessions`. Sessions last 7 days from last use and are extended at most once a day. There is no cookie cache, so signing out or deleting a session row ends it on the next request.
+- **OAuth:** the state is stored in `verifications` and in a signed cookie, used once, and valid for 10 minutes. Callback and redirect URLs must be on `BETTER_AUTH_URL` or `BETTER_AUTH_TRUSTED_ORIGINS`. Accounts are never linked automatically: a sign-in whose email belongs to a user of the other provider is refused (`account_not_linked`).
+- **Provider tokens:** GitHub and Google access and refresh tokens are encrypted with `BETTER_AUTH_SECRET` before they're stored in `accounts`. The app never calls the providers' APIs, so the endpoints that would return them to the browser (`/api/auth/get-access-token`, `/refresh-token`, `/account-info`) are disabled and answer 404.
+- **Client IP addresses** are never stored: `sessions.ip_address` is always NULL. Better Auth still reads the client IP for rate limiting.
+- **Rate limiting** is Better Auth's default: on only when `NODE_ENV=production`, counted per client IP in the memory of each server process.
+
+### Required before any production deployment
+
+These are not handled by the current code. Each needs its own reviewed change before the app is deployed anywhere reachable from the internet.
+
+1. **A trusted client-IP header.** Better Auth takes the client IP from `X-Forwarded-For` by default. That header is set by whoever sends the request: unless a proxy in front of the app overwrites it, a client can put any address there. Better Auth accepts the header only when it holds exactly one address and `advanced.ipAddress.trustedProxies` isn't set. So a client reaching the app directly can rotate fake addresses and get a fresh rate-limit allowance each time. And when the header is missing or lists several addresses, there is no usable IP, so every such request shares one counter per endpoint, and one client can use up the limit for everyone. Before deploying, configure `advanced.ipAddress.ipAddressHeaders` to the header the hosting platform sets and clients can't forge, or `advanced.ipAddress.trustedProxies` to the proxies' address ranges, and make sure the app isn't reachable without passing through them.
+2. **A shared rate-limit store.** Counts kept in process memory are per instance: they reset on every restart and deploy, and N instances (or serverless invocations) allow N times the limit. Running more than one instance in production needs an approved shared strategy first, such as Better Auth's database storage (a new table, so a reviewed migration) or a shared secondary store.
+3. **A secret-rotation procedure.** `BETTER_AUTH_SECRET` signs every session cookie and OAuth state, and encrypts the stored provider tokens. Changing it signs every user out (existing cookies no longer verify), invalidates sign-ins in progress, and makes the tokens already in `accounts` impossible to decrypt (they would be replaced only when each user signs in again). The validator refuses `BETTER_AUTH_SECRETS`, Better Auth's multi-key rotation, so there is currently no way to rotate without these effects. Agree on a reviewed procedure (when to rotate, how to announce the forced sign-out, what to do with old tokens) before production, and treat a leaked secret as a forced rotation.
+
+Also before production: HTTPS only (the validator refuses `http://` there), real OAuth apps whose callback URLs are `<BETTER_AUTH_URL>/api/auth/callback/github` and `/google`, and secrets kept in the host's secret store, never in the repository.
+
 ## Commands
 
 | Command                   | What it does                                                                       |

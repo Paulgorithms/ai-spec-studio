@@ -12,15 +12,19 @@ vi.mock("pg", () => {
 import {
   PROJECT_SLUG_PATTERN,
   SPECIFICATION_KEY_PATTERN,
+  accounts,
   projects,
+  sessions,
   specifications,
+  users,
+  verifications,
 } from "@/lib/db/schema";
 import { SPEC_STATUSES } from "@/lib/spec-status";
 
 const dialect = new PgDialect();
 const render = (value: SQL) => dialect.sqlToQuery(value);
 
-function columnSummary(table: typeof projects | typeof specifications) {
+function columnSummary(table: PgTable) {
   return Object.fromEntries(
     Object.entries(getTableColumns(table)).map(([key, column]) => [
       key,
@@ -35,7 +39,7 @@ function columnSummary(table: typeof projects | typeof specifications) {
   );
 }
 
-function checks(table: typeof projects | typeof specifications) {
+function checks(table: PgTable) {
   return Object.fromEntries(
     getTableConfig(table).checks.map((c) => [c.name, render(c.value)]),
   );
@@ -298,11 +302,227 @@ describe("specifications", () => {
 });
 
 describe("the schema module", () => {
-  test("exports only the two approved tables", async () => {
+  test("exports only the six approved tables", async () => {
     const schema = await import("@/lib/db/schema");
     const tables = Object.entries(schema)
       .filter(([, value]) => is(value, PgTable))
       .map(([name]) => name);
-    expect(tables.sort()).toEqual(["projects", "specifications"]);
+    expect(tables.sort()).toEqual([
+      "accounts",
+      "projects",
+      "sessions",
+      "specifications",
+      "users",
+      "verifications",
+    ]);
+  });
+});
+
+// Authentication tables (Better Auth). Shared shapes for every auth table.
+const TIMESTAMPTZ = "timestamp (3) with time zone";
+const ID = {
+  name: "id",
+  type: "uuid",
+  notNull: true,
+  primary: true,
+  hasDefault: true,
+};
+const CREATED_UPDATED = {
+  createdAt: {
+    name: "created_at",
+    type: TIMESTAMPTZ,
+    notNull: true,
+    primary: false,
+    hasDefault: true,
+  },
+  updatedAt: {
+    name: "updated_at",
+    type: TIMESTAMPTZ,
+    notNull: true,
+    primary: false,
+    hasDefault: true,
+  },
+};
+const column = (
+  name: string,
+  type: string,
+  notNull: boolean,
+  hasDefault = false,
+) => ({ name, type, notNull, primary: false, hasDefault });
+
+function uniques(table: PgTable) {
+  return getTableConfig(table).uniqueConstraints.map((u) => [
+    u.name,
+    u.columns.map((c) => c.name),
+  ]);
+}
+
+function indexSummary(table: PgTable) {
+  return getTableConfig(table).indexes.map((i) => ({
+    name: i.config.name,
+    unique: i.config.unique,
+    columns: i.config.columns.map((c) => ("name" in c ? c.name : c)),
+  }));
+}
+
+function foreignKeySummary(table: PgTable) {
+  return getTableConfig(table).foreignKeys.map((fk) => {
+    const reference = fk.reference();
+    return {
+      name: fk.getName(),
+      columns: reference.columns.map((c) => c.name),
+      foreignTable: getTableConfig(reference.foreignTable).name,
+      foreignColumns: reference.foreignColumns.map((c) => c.name),
+      onDelete: fk.onDelete,
+      onUpdate: fk.onUpdate,
+    };
+  });
+}
+
+describe.each([
+  ["users", users],
+  ["sessions", sessions],
+  ["accounts", accounts],
+  ["verifications", verifications],
+] as const)("%s (auth)", (name, table) => {
+  test("is a plural snake_case table with a database-generated UUID key", () => {
+    expect(getTableConfig(table).name).toBe(name);
+    const columns = getTableColumns(table);
+    expect(render(columns.id.default as SQL).sql).toBe("gen_random_uuid()");
+    expect(render(columns.createdAt.default as SQL).sql).toBe("now()");
+    expect(render(columns.updatedAt.default as SQL).sql).toBe("now()");
+    expect(columns.updatedAt.onUpdateFn?.()).toBeInstanceOf(Date);
+    expect(columns.createdAt.onUpdateFn).toBeUndefined();
+  });
+});
+
+describe("users", () => {
+  test("has Better Auth's user fields", () => {
+    expect(columnSummary(users)).toEqual({
+      id: ID,
+      name: column("name", "text", true),
+      email: column("email", "text", true),
+      emailVerified: column("email_verified", "boolean", true, true),
+      image: column("image", "text", false),
+      ...CREATED_UPDATED,
+    });
+    expect(getTableColumns(users).emailVerified.default).toBe(false);
+  });
+
+  test("makes email unique with a plain (case-sensitive) constraint", () => {
+    expect(uniques(users)).toEqual([["users_email_unique", ["email"]]]);
+    expect(indexSummary(users)).toEqual([]);
+    expect(foreignKeySummary(users)).toEqual([]);
+    expect(checks(users)).toEqual({});
+  });
+});
+
+describe("sessions", () => {
+  test("has Better Auth's session fields, with a nullable ip_address", () => {
+    expect(columnSummary(sessions)).toEqual({
+      id: ID,
+      expiresAt: column("expires_at", TIMESTAMPTZ, true),
+      token: column("token", "text", true),
+      ipAddress: column("ip_address", "text", false),
+      userAgent: column("user_agent", "text", false),
+      userId: column("user_id", "uuid", true),
+      ...CREATED_UPDATED,
+    });
+  });
+
+  test("makes token unique, indexes user_id, and cascades from users", () => {
+    expect(uniques(sessions)).toEqual([["sessions_token_unique", ["token"]]]);
+    expect(indexSummary(sessions)).toEqual([
+      { name: "sessions_user_id_idx", unique: false, columns: ["user_id"] },
+    ]);
+    expect(foreignKeySummary(sessions)).toEqual([
+      {
+        name: "sessions_user_id_fkey",
+        columns: ["user_id"],
+        foreignTable: "users",
+        foreignColumns: ["id"],
+        onDelete: "cascade",
+        onUpdate: "no action",
+      },
+    ]);
+    expect(checks(sessions)).toEqual({});
+  });
+});
+
+describe("accounts", () => {
+  test("has Better Auth's account fields", () => {
+    expect(columnSummary(accounts)).toEqual({
+      id: ID,
+      accountId: column("account_id", "text", true),
+      providerId: column("provider_id", "text", true),
+      userId: column("user_id", "uuid", true),
+      accessToken: column("access_token", "text", false),
+      refreshToken: column("refresh_token", "text", false),
+      idToken: column("id_token", "text", false),
+      accessTokenExpiresAt: column(
+        "access_token_expires_at",
+        TIMESTAMPTZ,
+        false,
+      ),
+      refreshTokenExpiresAt: column(
+        "refresh_token_expires_at",
+        TIMESTAMPTZ,
+        false,
+      ),
+      scope: column("scope", "text", false),
+      password: column("password", "text", false),
+      ...CREATED_UPDATED,
+    });
+  });
+
+  test("makes each provider identity unique, indexes user_id, and cascades from users", () => {
+    expect(uniques(accounts)).toEqual([
+      ["accounts_provider_id_account_id_unique", ["provider_id", "account_id"]],
+    ]);
+    expect(indexSummary(accounts)).toEqual([
+      { name: "accounts_user_id_idx", unique: false, columns: ["user_id"] },
+    ]);
+    expect(foreignKeySummary(accounts)).toEqual([
+      {
+        name: "accounts_user_id_fkey",
+        columns: ["user_id"],
+        foreignTable: "users",
+        foreignColumns: ["id"],
+        onDelete: "cascade",
+        onUpdate: "no action",
+      },
+    ]);
+  });
+
+  test("forbids stored passwords, and allows any provider id", () => {
+    // No provider allowlist (approved decision): only the password check.
+    expect(checks(accounts)).toEqual({
+      accounts_password_null_check: {
+        sql: `"accounts"."password" IS NULL`,
+        params: [],
+      },
+    });
+  });
+});
+
+describe("verifications", () => {
+  test("has Better Auth's verification fields, indexed by identifier", () => {
+    expect(columnSummary(verifications)).toEqual({
+      id: ID,
+      identifier: column("identifier", "text", true),
+      value: column("value", "text", true),
+      expiresAt: column("expires_at", TIMESTAMPTZ, true),
+      ...CREATED_UPDATED,
+    });
+    expect(indexSummary(verifications)).toEqual([
+      {
+        name: "verifications_identifier_idx",
+        unique: false,
+        columns: ["identifier"],
+      },
+    ]);
+    expect(uniques(verifications)).toEqual([]);
+    expect(foreignKeySummary(verifications)).toEqual([]);
+    expect(checks(verifications)).toEqual({});
   });
 });

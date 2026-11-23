@@ -17,7 +17,16 @@ import {
   developmentDatabaseIsolationViolations,
 } from "@/lib/db/testing/development-database-isolation";
 import type { SpecStatus } from "@/lib/spec-status";
-import { APPROVED_MIGRATION } from "../../../scripts/db/lib/migration-checks";
+import { APPROVED_MIGRATIONS } from "../../../scripts/db/lib/migration-checks";
+
+const ALL_TABLES = [
+  "accounts",
+  "projects",
+  "sessions",
+  "specifications",
+  "users",
+  "verifications",
+];
 
 // Unique test data, so no test depends on another or on execution order.
 const uniqueSlug = (label = "p") => `${label}-${randomUUID().slice(0, 8)}`;
@@ -568,10 +577,13 @@ describe("role and database isolation (read-only catalog checks)", () => {
           has_table_privilege('ai_spec_studio_app', t.qualified, 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER') as app_any,
           has_table_privilege('ai_spec_studio_migrator', t.qualified, 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER') as migrator_any,
           has_table_privilege('public', t.qualified, 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER') as public_any
-        from (values ('projects', 'public.projects'), ('specifications', 'public.specifications')) as t (name, qualified)
+        from (values ('accounts', 'public.accounts'), ('projects', 'public.projects'),
+                     ('sessions', 'public.sessions'), ('specifications', 'public.specifications'),
+                     ('users', 'public.users'), ('verifications', 'public.verifications'))
+          as t (name, qualified)
         order by 1`);
       expect(result.rows).toEqual(
-        ["projects", "specifications"].map((name) => ({
+        ALL_TABLES.map((name) => ({
           name,
           app_any: false,
           migrator_any: false,
@@ -581,21 +593,25 @@ describe("role and database isolation (read-only catalog checks)", () => {
     });
   });
 
-  test("the tables exist, owned by the test role, with exactly the approved migration journaled", async () => {
+  test("the six tables exist, owned by the test role, with exactly the approved migrations journaled in order", async () => {
     await withRollback(async (tx) => {
       const tables = await tx.execute<Row>(sql`
         select c.relname::text as name, pg_get_userbyid(c.relowner)::text as owner
         from pg_class as c join pg_namespace as n on n.oid = c.relnamespace
         where n.nspname = 'public' and c.relkind = 'r'
         order by c.relname::text collate "C"`);
-      expect(tables.rows).toEqual([
-        { name: "projects", owner: "ai_spec_studio_test" },
-        { name: "specifications", owner: "ai_spec_studio_test" },
-      ]);
-      const journal = await tx.execute<Row>(
-        sql`select hash from drizzle.__drizzle_migrations order by id`,
+      expect(tables.rows).toEqual(
+        ALL_TABLES.map((name) => ({ name, owner: "ai_spec_studio_test" })),
       );
-      expect(journal.rows).toEqual([{ hash: APPROVED_MIGRATION.sha256 }]);
+      const journal = await tx.execute<Row>(
+        sql`select hash, created_at::text as created_at from drizzle.__drizzle_migrations order by id`,
+      );
+      expect(journal.rows).toEqual(
+        APPROVED_MIGRATIONS.map((m) => ({
+          hash: m.sha256,
+          created_at: String(m.when),
+        })),
+      );
     });
   });
 });
